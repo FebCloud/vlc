@@ -96,7 +96,6 @@ endif
 LIVE555_SUBDIRS=groupsock liveMedia UsageEnvironment BasicUsageEnvironment
 
 .live555: live555
-	$(REQUIRE_GNUV3)
 	cd $< && for subdir in $(LIVE555_SUBDIRS); do \
 		echo "PREFIX = $(PREFIX)" >> $$subdir/Makefile.head && \
 		echo "LIBDIR = $(PREFIX)/lib" >> $$subdir/Makefile.head ; done
