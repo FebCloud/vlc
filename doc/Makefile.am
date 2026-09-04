@@ -77,6 +77,7 @@ EXTRA_DIST = \
 	$(man1_MANS) \
 	$(LIBVLC_SAMPLES) \
 	fortunes.txt \
+	hls-fast-start.md \
 	release-howto.txt \
 	Doxyfile.in \
 	lirc/example.lircrc \

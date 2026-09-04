@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <ctime>
+#include <limits>
 
 using namespace adaptive::http;
 using namespace adaptive::logic;
@@ -62,7 +63,12 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
              logic          ( nullptr ),
              playlist       ( pl ),
              streamFactory  ( factory ),
-             p_demux        ( p_demux_ )
+             p_demux        ( p_demux_ ),
+             startupPolicy  ( var_InheritBool(p_demux_, "adaptive-fast-start"),
+                              VLC_TICK_FROM_MS(var_InheritInteger(p_demux_,
+                                                                 "adaptive-startup-buffer")),
+                              var_InheritBool(p_demux_, "adaptive-startup-parallel"),
+                              var_InheritBool(p_demux_, "adaptive-startup-media") )
 {
     currentPeriod = playlist->getFirstPeriod();
     resources = res;
@@ -71,6 +77,7 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
     b_thread = false;
     b_buffering = false;
     b_canceled = false;
+    startupPreparationPending = startupPolicy.shouldPrepareInParallel();
     b_preparsing = false;
     nextPlaylistupdate = 0;
     demux.pcr_syncpoint = TimestampSynchronizationPoint::RandomAccess;
@@ -85,6 +92,8 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
     cached.playlistEnd = 0;
     cached.playlistLength = 0;
     cached.lastupdate = 0;
+    if(startupPreparationPending)
+        resources->getConnManager()->setStartupConcurrency(true);
 }
 
 PlaylistManager::~PlaylistManager   ()
@@ -218,11 +227,79 @@ static bool streamCompare(const PrioritizedAbstractStream &a,  const Prioritized
     return false;
 }
 
+struct StartupPreparationTask
+{
+    AbstractStream *stream;
+    bool throughMedia;
+    bool succeeded;
+};
+
+static void * prepareStartupStream(void *opaque)
+{
+    StartupPreparationTask *task = static_cast<StartupPreparationTask *>(opaque);
+    task->succeeded = task->stream->prepareStartupChunk(task->throughMedia);
+    return nullptr;
+}
+
+void PlaylistManager::prepareStartupStreams()
+{
+    if(!startupPreparationPending)
+        return;
+    startupPreparationPending = false;
+
+    std::vector<StartupStreamCandidate> candidates;
+    candidates.reserve(streams.size());
+    for(AbstractStream *stream : streams)
+    {
+        StartupStreamCandidate candidate = {
+            stream->startupStreamKind(),
+            stream->isValid(),
+            stream->esCount() > 0 && stream->isSelected(),
+            stream->isDisabled(),
+        };
+        candidates.push_back(candidate);
+    }
+
+    const StartupStreamSelection selection = selectStartupStreams(candidates);
+    const size_t missing = std::numeric_limits<size_t>::max();
+    AbstractStream *audio = selection.audio == missing ? nullptr : streams[selection.audio];
+    AbstractStream *video = selection.video == missing ? nullptr : streams[selection.video];
+
+    bool audioPrepared = false;
+    bool videoPrepared = false;
+    const bool throughMedia = startupPolicy.shouldPrefetchMediaChunk();
+    if(audio && video)
+    {
+        StartupPreparationTask task = { audio, throughMedia, false };
+        vlc_thread_t worker;
+        if(vlc_clone(&worker, prepareStartupStream, &task) == 0)
+        {
+            videoPrepared = video->prepareStartupChunk(throughMedia);
+            vlc_join(worker, nullptr);
+            audioPrepared = task.succeeded;
+        }
+        else
+        {
+            audioPrepared = audio->prepareStartupChunk(throughMedia);
+            videoPrepared = video->prepareStartupChunk(throughMedia);
+        }
+    }
+    else if(audio)
+        audioPrepared = audio->prepareStartupChunk(throughMedia);
+    else if(video)
+        videoPrepared = video->prepareStartupChunk(throughMedia);
+
+    msg_Dbg(p_demux, "adaptive parallel startup prepared audio=%d video=%d media=%d",
+            audioPrepared, videoPrepared, throughMedia);
+}
+
 AbstractStream::BufferingStatus PlaylistManager::bufferize(Times deadline,
                                                            vlc_tick_t i_min_buffering,
                                                            vlc_tick_t i_max_buffering,
                                                            vlc_tick_t i_target_buffering)
 {
+    prepareStartupStreams();
+
     AbstractStream::BufferingStatus i_return = AbstractStream::BufferingStatus::End;
 
     /* First reorder by status >> buffering level */
@@ -528,15 +605,25 @@ int PlaylistManager::doDemux(vlc_tick_t increment)
         vlc_mutex_unlock(&demux.lock);
         break;
     case AbstractStream::Status::Demuxed:
-        vlc_mutex_lock(&demux.lock);
-        if( demux.times.continuous != VLC_TICK_INVALID && barrier.continuous != demux.times.continuous )
         {
-            demux.times = barrier;
-            vlc_tick_t pcr = VLC_TICK_0 + std::max(INT64_C(0), demux.times.continuous - VLC_TICK_FROM_MS(100));
-            es_out_Control(p_demux->out, ES_OUT_SET_GROUP_PCR, 0, pcr);
+            bool advanced = false;
+            vlc_mutex_lock(&demux.lock);
+            if( demux.times.continuous != VLC_TICK_INVALID && barrier.continuous != demux.times.continuous )
+            {
+                demux.times = barrier;
+                vlc_tick_t pcr = VLC_TICK_0 + std::max(INT64_C(0), demux.times.continuous - VLC_TICK_FROM_MS(100));
+                es_out_Control(p_demux->out, ES_OUT_SET_GROUP_PCR, 0, pcr);
+                advanced = true;
+            }
+            vlc_mutex_unlock(&demux.lock);
+            if(advanced && startupPolicy.isStarting())
+            {
+                resources->getConnManager()->setStartupConcurrency(false);
+                startupPolicy.onMediaDequeued();
+                msg_Dbg(p_demux, "adaptive fast start completed; restored normal buffering");
+            }
+            break;
         }
-        vlc_mutex_unlock(&demux.lock);
-        break;
     }
 
     return VLC_DEMUXER_SUCCESS;
@@ -706,7 +793,7 @@ void PlaylistManager::setBufferingRunState(bool b)
 void PlaylistManager::Run()
 {
     mutex_locker locker {lock};
-    const vlc_tick_t i_min_buffering = bufferingLogic->getMinBuffering(playlist);
+    const vlc_tick_t i_upstream_min_buffering = bufferingLogic->getMinBuffering(playlist);
     const vlc_tick_t i_max_buffering = bufferingLogic->getMaxBuffering(playlist);
     const vlc_tick_t i_target_buffering = bufferingLogic->getStableBuffering(playlist);
     while(1)
@@ -728,6 +815,8 @@ void PlaylistManager::Run()
         Times pcr = demux.times;
         vlc_mutex_unlock(&demux.lock);
 
+        const vlc_tick_t i_min_buffering =
+                startupPolicy.getMinBuffering(i_upstream_min_buffering);
         AbstractStream::BufferingStatus i_return = bufferize(pcr, i_min_buffering,
                                                              i_max_buffering, i_target_buffering);
 

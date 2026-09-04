@@ -23,6 +23,7 @@
 #define PLAYLISTMANAGER_H_
 
 #include "logic/AbstractAdaptationLogic.h"
+#include "logic/StartupPolicy.hpp"
 #include "tools/Macros.hpp"
 #include "Streams.hpp"
 #include <vector>
@@ -110,6 +111,7 @@ namespace adaptive
             BasePlaylist                    *playlist;
             AbstractStreamFactory               *streamFactory;
             demux_t                             *p_demux;
+            StartupPolicy                       startupPolicy;
             std::vector<AbstractStream *>        streams;
             BasePeriod                          *currentPeriod;
             bool                                 b_preparsing;
@@ -150,6 +152,7 @@ namespace adaptive
             SynchronizationReferences synchronizationReferences;
 
         private:
+            void prepareStartupStreams();
             void setBufferingRunState(bool);
             void Run();
             static void * managerThread(void *);
@@ -159,6 +162,7 @@ namespace adaptive
             bool         b_thread;
             bool         b_buffering;
             bool         b_canceled;
+            bool         startupPreparationPending;
             vlc_tick_t   pause_start;
     };
 

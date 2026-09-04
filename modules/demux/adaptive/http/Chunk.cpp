@@ -101,6 +101,11 @@ RequestStatus AbstractChunk::getRequestStatus() const
     return source->getRequestStatus();
 }
 
+ChunkType AbstractChunk::getChunkType() const
+{
+    return source->getChunkType();
+}
+
 size_t AbstractChunk::getBytesRead() const
 {
     return this->bytesRead;
@@ -166,8 +171,17 @@ HTTPChunkSource::HTTPChunkSource(const std::string& url, AbstractConnectionManag
 
 HTTPChunkSource::~HTTPChunkSource()
 {
+    releaseConnection();
+}
+
+void HTTPChunkSource::releaseConnection()
+{
     if(connection)
+    {
+        responseContentType = connection->getContentType();
         connection->setUsed(false);
+        connection = nullptr;
+    }
 }
 
 bool HTTPChunkSource::init(const std::string &url)
@@ -271,7 +285,7 @@ const std::string & HTTPChunkSource::getContentType() const
     if(connection)
         return connection->getContentType();
     else
-        return EmptyStr;
+        return responseContentType;
 }
 
 void HTTPChunkSource::setIdentifier(const std::string &s, const BytesRange &r)
@@ -318,6 +332,7 @@ bool HTTPChunkSource::prepare()
         /* Because we don't know Chunk size at start, we need to get size
                from content length */
         contentLength = connection->getContentLength();
+        responseContentType = connection->getContentType();
         prepared = true;
         responseTime = vlc_tick_now();
         return true;
@@ -336,6 +351,7 @@ HTTPChunkBufferedSource::HTTPChunkBufferedSource(const std::string& url, Abstrac
                                                  ChunkType type, const BytesRange &range,
                                                  bool access) :
     HTTPChunkSource(url, manager, sourceid, type, range, access),
+    assignedDownloader(nullptr),
     p_head     (nullptr),
     pp_tail    (&p_head),
     buffered     (0)
@@ -394,6 +410,7 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
         {
             done = true;
             eof = true;
+            releaseConnection();
             avail.signal();
             return;
         }
@@ -430,6 +447,7 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
         rate.size = buffered;
         rate.time = downloadEndTime - requestStartTime;
         rate.latency = responseTime - requestStartTime;
+        releaseConnection();
         avail.signal();
     }
     else
@@ -450,6 +468,7 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
             rate.size = buffered;
             rate.time = downloadEndTime - requestStartTime;
             rate.latency = responseTime - requestStartTime;
+            releaseConnection();
         }
         avail.signal();
     }
@@ -575,6 +594,11 @@ const std::string & ProbeableChunk::getContentType() const
 RequestStatus ProbeableChunk::getRequestStatus() const
 {
     return source->getRequestStatus();
+}
+
+ChunkType ProbeableChunk::getChunkType() const
+{
+    return source->getChunkType();
 }
 
 block_t * ProbeableChunk::readBlock()

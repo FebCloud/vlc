@@ -46,6 +46,10 @@ int main()
     TEST(Conversions) ||
     TEST(TemplatedUri) ||
     TEST(BufferingLogic) ||
+    TEST(StartupPolicy) ||
+    TEST(StartupStreamSelector) ||
+    TEST(StartupChunks) ||
+    TEST(ConnectionReuse) ||
     TEST(CommandsQueue) ||
     TEST(M3U8MasterPlaylist) ||
     TEST(M3U8Playlist) ||

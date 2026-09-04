@@ -355,7 +355,11 @@ libvlc_adaptive_la_SOURCES = \
     demux/adaptive/logic/AlwaysLowestAdaptationLogic.cpp \
     demux/adaptive/logic/AlwaysLowestAdaptationLogic.hpp \
     demux/adaptive/logic/BufferingLogic.cpp \
+    demux/adaptive/logic/StartupPolicy.cpp \
+    demux/adaptive/logic/StartupPolicy.hpp \
+    demux/adaptive/logic/StartupStreamSelector.cpp \
     demux/adaptive/logic/BufferingLogic.hpp \
+    demux/adaptive/logic/StartupStreamSelector.hpp \
     demux/adaptive/logic/IDownloadRateObserver.h \
     demux/adaptive/logic/NearOptimalAdaptationLogic.cpp \
     demux/adaptive/logic/NearOptimalAdaptationLogic.hpp \
@@ -402,6 +406,8 @@ libvlc_adaptive_la_SOURCES = \
     demux/adaptive/SegmentTracker.hpp \
     demux/adaptive/SharedResources.cpp \
     demux/adaptive/SharedResources.hpp \
+    demux/adaptive/StartupChunks.cpp \
+    demux/adaptive/StartupChunks.hpp \
     demux/adaptive/StreamFormat.cpp \
     demux/adaptive/StreamFormat.hpp \
     demux/adaptive/Streams.cpp \
@@ -520,6 +526,10 @@ demux_LTLIBRARIES += libadaptive_plugin.la
 
 adaptive_test_SOURCES = \
     demux/adaptive/test/logic/BufferingLogic.cpp \
+    demux/adaptive/test/logic/StartupPolicy.cpp \
+    demux/adaptive/test/logic/StartupStreamSelector.cpp \
+    demux/adaptive/test/StartupChunks.cpp \
+    demux/adaptive/test/http/ConnectionReuse.cpp \
     demux/adaptive/test/tools/Conversions.cpp \
     demux/adaptive/test/playlist/Inheritables.cpp \
     demux/adaptive/test/playlist/M3U8.cpp \

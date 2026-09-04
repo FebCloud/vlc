@@ -26,6 +26,7 @@
 #define HTTPCONNECTIONMANAGER_H_
 
 #include "../logic/IDownloadRateObserver.h"
+#include "../logic/StartupStreamSelector.hpp"
 #include "BytesRange.hpp"
 
 #include <vlc_common.h>
@@ -64,6 +65,7 @@ namespace adaptive
 
                 virtual void start(AbstractChunkSource *) = 0;
                 virtual void cancel(AbstractChunkSource *) = 0;
+                virtual void setStartupConcurrency(bool) {}
 
                 virtual void updateDownloadRate(const ID &, size_t,
                                                 vlc_tick_t, vlc_tick_t) override;
@@ -92,6 +94,7 @@ namespace adaptive
 
                 void start(AbstractChunkSource *)  override;
                 void cancel(AbstractChunkSource *)  override;
+                void setStartupConcurrency(bool) override;
                 void         setLocalConnectionsAllowed();
                 void         addFactory(AbstractConnectionFactory *);
 
@@ -99,12 +102,15 @@ namespace adaptive
                 void    releaseAllConnections ();
                 Downloader                                         *downloader;
                 Downloader                                         *downloaderhp;
+                Downloader                                         *startupDownloader;
+                Downloader                                         *startupDownloaderhp;
+                logic::StartupDownloadLaneSelector                  startupLanes;
                 vlc_mutex_t                                         lock;
                 std::vector<AbstractConnection *>                   connectionPool;
                 std::list<AbstractConnectionFactory *>              factories;
                 bool                                                localAllowed;
                 AbstractConnection * reuseConnection(ConnectionParams &);
-                Downloader * getDownloadQueue(const AbstractChunkSource *) const;
+                Downloader * getDownloadQueue(const AbstractChunkSource *);
                 std::list<HTTPChunkBufferedSource *> cache;
                 size_t cache_total;
                 size_t cache_max;

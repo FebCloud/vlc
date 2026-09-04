@@ -60,6 +60,7 @@ AbstractStream::AbstractStream(demux_t * demux_)
     notfound_sequence = 0;
     mightalwaysstartfromzero = false;
     last_buffer_status = BufferingStatus::Lessthanmin;
+    startupKind = logic::StartupStreamKind::Unknown;
     currentrep.width = 0;
     currentrep.height = 0;
     vlc_mutex_init(&lock);
@@ -153,6 +154,7 @@ bool AbstractStream::resetForNewPosition(vlc_tick_t seekMediaTime)
     {
         delete currentChunk;
         currentChunk = nullptr;
+        startupChunks.clear();
         needrestart = false;
         segmentgap = false;
 
@@ -214,6 +216,27 @@ Times AbstractStream::getFirstTimes() const
 int AbstractStream::esCount() const
 {
     return fakeEsOut()->esCount();
+}
+
+logic::StartupStreamKind AbstractStream::startupStreamKind() const
+{
+    return startupKind;
+}
+
+bool AbstractStream::prepareStartupChunk(bool throughMedia)
+{
+    vlc_mutex_locker locker(&lock);
+
+    if(!segmentTracker || !valid || disabled)
+        return false;
+    if(currentChunk || demuxer)
+        return true;
+    if(!segmentTracker->setStartPosition() || !segmentTracker->bufferingAvailable())
+        return false;
+
+    startupChunks.prepare([this]() { return getNextChunk(); }, throughMedia);
+    currentChunk = startupChunks.take();
+    return currentChunk != nullptr;
 }
 
 bool AbstractStream::seekAble() const
@@ -638,7 +661,9 @@ block_t * AbstractStream::readNextBlock()
     if (currentChunk == nullptr && !eof)
     {
         segmentgap = false;
-        currentChunk = getNextChunk();
+        currentChunk = startupChunks.take();
+        if(!currentChunk)
+            currentChunk = getNextChunk();
     }
 
     if(demuxfirstchunk)
@@ -911,7 +936,17 @@ void AbstractStream::declaredCodecs()
     {
         const es_format_t *fmt = (*it)->getFmt();
         if(fmt->i_cat != UNKNOWN_ES)
+        {
+            logic::StartupStreamKind kind = logic::StartupStreamKind::Unknown;
+            if(fmt->i_cat == AUDIO_ES)
+                kind = logic::StartupStreamKind::Audio;
+            else if(fmt->i_cat == VIDEO_ES)
+                kind = logic::StartupStreamKind::Video;
+            else if(fmt->i_cat == SPU_ES)
+                kind = logic::StartupStreamKind::Subtitle;
+            startupKind = logic::mergeStartupStreamKind(startupKind, kind);
             fakeEsOut()->declareEs(fmt);
+        }
     }
 }
 
