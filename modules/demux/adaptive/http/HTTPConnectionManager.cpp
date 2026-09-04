@@ -34,6 +34,7 @@
 #include <vlc_http.h>
 
 #include <cassert>
+#include <new>
 
 using namespace adaptive::http;
 
@@ -79,6 +80,8 @@ HTTPConnectionManager::HTTPConnectionManager    (vlc_object_t *p_object_)
     vlc_mutex_init(&lock);
     downloader = new Downloader();
     downloaderhp = new Downloader();
+    startupDownloader = nullptr;
+    startupDownloaderhp = nullptr;
     downloader->start();
     downloaderhp->start();
     cache_total = 0;
@@ -99,6 +102,8 @@ HTTPConnectionManager::~HTTPConnectionManager   ()
     }
     delete downloader;
     delete downloaderhp;
+    delete startupDownloader;
+    delete startupDownloaderhp;
     this->closeAllConnections();
     while(!factories.empty())
     {
@@ -238,33 +243,58 @@ void HTTPConnectionManager::recycleSource(AbstractChunkSource *source)
         deleteSource(source);
 }
 
-Downloader * HTTPConnectionManager::getDownloadQueue(const AbstractChunkSource *source) const
+Downloader * HTTPConnectionManager::getDownloadQueue(const AbstractChunkSource *source)
 {
     switch(source->getChunkType())
     {
         case ChunkType::Init:
         case ChunkType::Index:
         case ChunkType::Segment:
-            return downloader;
+            return startupDownloader && startupLanes.useSecondary(false)
+                 ? startupDownloader : downloader;
         case ChunkType::Key:
         case ChunkType::Playlist:
         default:
-            return downloaderhp;
+            return startupDownloaderhp && startupLanes.useSecondary(true)
+                 ? startupDownloaderhp : downloaderhp;
     }
 }
 
 void HTTPConnectionManager::start(AbstractChunkSource *source)
 {
     HTTPChunkBufferedSource *src = dynamic_cast<HTTPChunkBufferedSource *>(source);
-    if(src && !src->isDone())
-        getDownloadQueue(src)->schedule(src);
+    if(src && !src->isDone() && !src->assignedDownloader)
+    {
+        src->assignedDownloader = getDownloadQueue(src);
+        src->assignedDownloader->schedule(src);
+    }
 }
 
 void HTTPConnectionManager::cancel(AbstractChunkSource *source)
 {
     HTTPChunkBufferedSource *src = dynamic_cast<HTTPChunkBufferedSource *>(source);
-    if(src)
-        getDownloadQueue(src)->cancel(src);
+    if(src && src->assignedDownloader)
+        src->assignedDownloader->cancel(src);
+}
+
+void HTTPConnectionManager::setStartupConcurrency(bool enabled)
+{
+    if(enabled && (!startupDownloader || !startupDownloaderhp))
+    {
+        Downloader *normal = new (std::nothrow) Downloader();
+        Downloader *high = new (std::nothrow) Downloader();
+        if(normal && high && normal->start() && high->start())
+        {
+            startupDownloader = normal;
+            startupDownloaderhp = high;
+        }
+        else
+        {
+            delete normal;
+            delete high;
+        }
+    }
+    startupLanes.setEnabled(enabled && startupDownloader && startupDownloaderhp);
 }
 
 void HTTPConnectionManager::setLocalConnectionsAllowed()

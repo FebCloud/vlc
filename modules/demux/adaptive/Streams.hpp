@@ -28,6 +28,8 @@
 #include "plumbing/CommandsQueue.hpp"
 #include "plumbing/Demuxer.hpp"
 #include "plumbing/FakeESOut.hpp"
+#include "logic/StartupStreamSelector.hpp"
+#include "StartupChunks.hpp"
 
 #include "Time.hpp"
 
@@ -68,6 +70,8 @@ namespace adaptive
         vlc_tick_t getMinAheadTime() const;
         Times getFirstTimes() const;
         int esCount() const;
+        logic::StartupStreamKind startupStreamKind() const;
+        bool prepareStartupChunk(bool = false);
         bool isSelected() const;
         bool isDisabled() const;
         bool isValid() const;
@@ -142,6 +146,7 @@ namespace adaptive
 
         ChunkInterface * getNextChunk() const;
         ChunkInterface *currentChunk;
+        StartupChunks startupChunks;
         bool eof;
         std::string language;
         std::string description;
@@ -173,6 +178,7 @@ namespace adaptive
         BufferingStatus last_buffer_status;
         bool valid;
         bool disabled;
+        logic::StartupStreamKind startupKind;
         unsigned notfound_sequence;
     };
 

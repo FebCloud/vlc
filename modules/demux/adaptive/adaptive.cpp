@@ -76,6 +76,15 @@ static void Close   (vlc_object_t *);
 
 #define ADAPT_MAXBUFFER_TEXT N_("Max buffering (ms)")
 
+#define ADAPT_FAST_START_TEXT N_("Faster initial adaptive-stream startup")
+#define ADAPT_FAST_START_LONGTEXT N_("Temporarily lower only the minimum buffering threshold until media is first dequeued")
+#define ADAPT_STARTUP_BUFFER_TEXT N_("Initial adaptive-stream buffering (ms)")
+#define ADAPT_STARTUP_BUFFER_LONGTEXT N_("Initial minimum buffering when faster startup is enabled; clamped between 500 and 6000 ms")
+#define ADAPT_STARTUP_PARALLEL_TEXT N_("Prepare selected audio and video concurrently")
+#define ADAPT_STARTUP_PARALLEL_LONGTEXT N_("During fast start, prefetch only the first selected audio candidate and selected video before normal serial demux")
+#define ADAPT_STARTUP_MEDIA_TEXT N_("Prefetch the first selected media segments")
+#define ADAPT_STARTUP_MEDIA_LONGTEXT N_("When parallel startup is enabled, continue prefetching selected audio and video through their first media segments")
+
 #define ADAPT_LOGIC_TEXT N_("Adaptive Logic")
 
 #define ADAPT_ACCESS_TEXT N_("Use regular HTTP modules")
@@ -141,6 +150,14 @@ vlc_module_begin ()
         add_integer( "adaptive-maxbuffer",
                      MS_FROM_VLC_TICK(AbstractBufferingLogic::DEFAULT_MAX_BUFFERING),
                      ADAPT_MAXBUFFER_TEXT, nullptr )
+        add_bool   ( "adaptive-fast-start", false,
+                     ADAPT_FAST_START_TEXT, ADAPT_FAST_START_LONGTEXT )
+        add_integer( "adaptive-startup-buffer", 2000,
+                     ADAPT_STARTUP_BUFFER_TEXT, ADAPT_STARTUP_BUFFER_LONGTEXT )
+        add_bool   ( "adaptive-startup-parallel", false,
+                     ADAPT_STARTUP_PARALLEL_TEXT, ADAPT_STARTUP_PARALLEL_LONGTEXT )
+        add_bool   ( "adaptive-startup-media", false,
+                     ADAPT_STARTUP_MEDIA_TEXT, ADAPT_STARTUP_MEDIA_LONGTEXT )
         add_integer( "adaptive-lowlatency", -1, ADAPT_LOWLATENCY_TEXT, ADAPT_LOWLATENCY_LONGTEXT )
             change_integer_list(rgi_latency, ppsz_latency)
         set_callbacks( Open, Close )

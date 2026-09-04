@@ -44,6 +44,7 @@ namespace adaptive
         class AbstractConnection;
         class AbstractConnectionManager;
         class AbstractChunk;
+        class Downloader;
 
         enum class ChunkType
         {
@@ -59,6 +60,7 @@ namespace adaptive
             PREREQ_INTERFACE(ChunkInterface);
 
             public:
+                virtual ChunkType     getChunkType    () const = 0;
                 virtual const std::string & getContentType  () const = 0;
                 virtual RequestStatus getRequestStatus() const = 0;
 
@@ -77,7 +79,7 @@ namespace adaptive
 
             public:
                 const BytesRange &  getBytesRange   () const;
-                ChunkType           getChunkType    () const;
+                ChunkType           getChunkType    () const override;
                 const StorageID &   getStorageID    () const;
                 const std::string & getContentType  () const override;
                 RequestStatus getRequestStatus() const override;
@@ -102,6 +104,7 @@ namespace adaptive
 
                 const std::string & getContentType  () const override;
                 RequestStatus getRequestStatus      () const override;
+                ChunkType     getChunkType           () const override;
                 size_t        getBytesRead          () const override;
                 bool          hasMoreData           () const override;
                 uint64_t              getStartByteInFile    () const;
@@ -143,6 +146,7 @@ namespace adaptive
                                 bool = false);
 
                 virtual bool        prepare();
+                void                releaseConnection();
                 void                setIdentifier(const std::string &, const BytesRange &);
                 AbstractConnection    *connection;
                 AbstractConnectionManager *connManager;
@@ -154,6 +158,7 @@ namespace adaptive
                 vlc_tick_t          requestStartTime;
                 vlc_tick_t          responseTime;
                 vlc_tick_t          downloadEndTime;
+                std::string         responseContentType;
 
             private:
                 bool init(const std::string &);
@@ -182,6 +187,7 @@ namespace adaptive
                 void               release();
 
             private:
+                Downloader         *assignedDownloader;
                 block_t            *p_head; /* read cache buffer */
                 block_t           **pp_tail;
                 const block_t      *p_read;
@@ -212,6 +218,7 @@ namespace adaptive
 
                 const std::string & getContentType  () const override;
                 RequestStatus getRequestStatus() const override;
+                ChunkType     getChunkType() const override;
 
                 block_t *   readBlock       () override;
                 block_t *   read            (size_t) override;

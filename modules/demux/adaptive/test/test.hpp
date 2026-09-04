@@ -47,6 +47,10 @@ int M3U8MasterPlaylist_test();
 int M3U8Playlist_test();
 int CommandsQueue_test();
 int BufferingLogic_test();
+int StartupPolicy_test();
+int StartupStreamSelector_test();
+int StartupChunks_test();
+int ConnectionReuse_test();
 int FakeEsOut_test();
 int SegmentTracker_test();
 
