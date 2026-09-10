@@ -396,6 +396,11 @@ void input_SetEsIdDelay(input_thread_t *input, vlc_es_id_t *es_id,
  */
 input_item_t* input_GetItem( input_thread_t * ) VLC_USED;
 
+int input_GetAdaptiveVariants(input_thread_t *, vlc_adaptive_variant_t **,
+                              size_t *);
+int input_SetAdaptiveVariant(input_thread_t *, const char *);
+int input_GetAdaptiveVariant(input_thread_t *, char **);
+
 /*****************************************************************************
  *  Private input fields
  *****************************************************************************/
@@ -505,6 +510,7 @@ typedef struct input_thread_private_t
 
     /* Main source */
     input_source_t *master;
+    vlc_mutex_t     lock_master;
     /* Slave sources (subs, and others) */
     size_t         i_slave;
     input_source_t **slave;

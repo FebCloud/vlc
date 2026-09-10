@@ -193,9 +193,11 @@ namespace adaptive
             virtual void Schedule( AbstractCommand *, EsType = EsType::Other ) = 0;
             virtual Times Process( Times )  = 0;
             virtual void Abort( bool b_reset )  = 0;
+            virtual size_t PruneAfter( const Times & ) = 0;
             virtual void Commit()  = 0;
             virtual bool isEmpty() const = 0;
             void setDrop( bool );
+            bool isDropping() const { return b_drop; }
             virtual void setDraining();
             void setEOF( bool );
             bool isDraining() const;
@@ -221,6 +223,7 @@ namespace adaptive
             void Schedule( AbstractCommand *, EsType = EsType::Other ) override;
             Times Process( Times ) override;
             void Abort( bool b_reset ) override;
+            size_t PruneAfter( const Times & ) override;
             void Commit() override;
             bool isEmpty() const override;
             void setDraining() override;

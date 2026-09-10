@@ -32,12 +32,36 @@
 #include "plumbing/SourceStream.hpp"
 #include "plumbing/CommandsQueue.hpp"
 #include "tools/Debug.hpp"
+#include "tools/FormatNamespace.hpp"
 #include <vlc_demux.h>
 
 #include <algorithm>
+#include <vector>
 
 using namespace adaptive;
 using namespace adaptive::http;
+
+static bool sameCodecFamilies(const BaseRepresentation *prev,
+                              const BaseRepresentation *next)
+{
+    const std::list<std::string> &a = prev->getCodecs();
+    const std::list<std::string> &b = next->getCodecs();
+    if(a.empty() || b.empty())
+        return true;
+    if(a.size() != b.size())
+        return false;
+
+    std::vector<vlc_fourcc_t> fa, fb;
+    fa.reserve(a.size());
+    fb.reserve(b.size());
+    for(const std::string &codec : a)
+        fa.push_back(FormatNamespace(codec).getFmt()->i_codec);
+    for(const std::string &codec : b)
+        fb.push_back(FormatNamespace(codec).getFmt()->i_codec);
+    std::sort(fa.begin(), fa.end());
+    std::sort(fb.begin(), fb.end());
+    return fa == fb;
+}
 
 AbstractStream::AbstractStream(demux_t * demux_)
 {
@@ -53,6 +77,8 @@ AbstractStream::AbstractStream(demux_t * demux_)
     needrestart = false;
     inrestart = false;
     demuxfirstchunk = false;
+    manualBoundarySwitchPending = false;
+    remapTimestampsAfterSwitch = false;
     segmentTracker = nullptr;
     demuxersource = nullptr;
     demuxer = nullptr;
@@ -63,7 +89,9 @@ AbstractStream::AbstractStream(demux_t * demux_)
     startupKind = logic::StartupStreamKind::Unknown;
     currentrep.width = 0;
     currentrep.height = 0;
+    demuxBusy = false;
     vlc_mutex_init(&lock);
+    vlc_cond_init(&demuxIdle);
 }
 
 bool AbstractStream::init(const StreamFormat &format_, SegmentTracker *tracker)
@@ -110,6 +138,11 @@ bool AbstractStream::init(const StreamFormat &format_, SegmentTracker *tracker)
 
 AbstractStream::~AbstractStream()
 {
+    vlc_mutex_lock(&lock);
+    while(demuxBusy)
+        vlc_cond_wait(&demuxIdle, &lock);
+    vlc_mutex_unlock(&lock);
+
     delete currentChunk;
     if(segmentTracker)
         segmentTracker->notifyBufferingState(false);
@@ -150,6 +183,8 @@ bool AbstractStream::resetForNewPosition(vlc_tick_t seekMediaTime)
     inrestart = false;
     needrestart = false;
     discontinuity = false;
+    manualBoundarySwitchPending = false;
+    remapTimestampsAfterSwitch = false;
     if(!demuxer || demuxer->needsRestartOnSeek()) /* needs (re)start */
     {
         delete currentChunk;
@@ -518,11 +553,14 @@ AbstractStream::BufferingStatus AbstractStream::doBufferize(Times deadline,
         else
             deadline = newdeadline;
 
-        /* need to read, demuxer still buffering, ... */
+        AbstractDemuxer *running = demuxer;
+        demuxBusy = true;
         vlc_mutex_unlock(&lock);
-        Demuxer::Status demuxStatus = demuxer->demux(deadline.continuous);
+        Demuxer::Status demuxStatus = running->demux(deadline.continuous);
         fakeEsOut()->scheduleNecessaryMilestone();
         vlc_mutex_lock(&lock);
+        demuxBusy = false;
+        vlc_cond_signal(&demuxIdle);
         if(demuxStatus != Demuxer::Status::Success)
         {
             if(discontinuity || needrestart)
@@ -644,7 +682,12 @@ ChunkInterface * AbstractStream::getNextChunk() const
     if(ck && !fakeEsOut()->hasSegmentStartTimes())
         fakeEsOut()->setSegmentStartTimes(startTimeContext);
 
-    if(ck && !fakeEsOut()->hasSynchronizationReference())
+    if(remapTimestampsAfterSwitch)
+    {
+        if(fakeEsOut()->hasSynchronizationReference())
+            remapTimestampsAfterSwitch = false;
+    }
+    else if(ck && !fakeEsOut()->hasSynchronizationReference())
     {
         if(!fakeEsOut()->hasSegmentStartTimes())
             return ck;
@@ -759,6 +802,87 @@ bool AbstractStream::runUpdates(bool)
         return false;
 }
 
+bool AbstractStream::prepareSwitchAtNextSegment(BaseAdaptationSet *set,
+                                                const Times &playback)
+{
+    vlc_mutex_locker locker(&lock);
+
+    if(!valid || disabled || !segmentTracker)
+        return false;
+
+    while(demuxBusy)
+        vlc_cond_wait(&demuxIdle, &lock);
+
+    if(segmentTracker->getAdaptationSet() != set)
+        return false;
+
+    if(playback.continuous == VLC_TICK_INVALID ||
+       playback.segment.media == VLC_TICK_INVALID)
+    {
+        msg_Warn(p_realdemux, "manual switch boundary rejected: invalid playback time");
+        return false;
+    }
+
+    vlc_tick_t segmentStart;
+    if(!segmentTracker->prepareSwitchAtNextSegment(playback.segment.media,
+                                                   &segmentStart, nullptr))
+        return false;
+
+    if(segmentStart < playback.segment.media)
+    {
+        msg_Warn(p_realdemux,
+                 "manual switch boundary rejected: target is not ahead of playback");
+        return false;
+    }
+
+    Times cutover = playback;
+    cutover.offsetBy(segmentStart - playback.segment.media);
+    const size_t dropped = fakeEsOut()->commandsQueue()->PruneAfter(cutover);
+    fakeEsOut()->setSegmentStartTimes(SegmentTimes());
+    fakeEsOut()->setSynchronizationReference(SynchronizationReference());
+    fakeEsOut()->setSpliceBeforeMedia(cutover.segment.media);
+    fakeEsOut()->setDeferredEsHandoff(true);
+    fakeEsOut()->setExpectedTimestamp(VLC_TICK_INVALID);
+    if(cutover.continuous != VLC_TICK_INVALID &&
+       cutover.segment.media != VLC_TICK_INVALID &&
+       segmentStart != VLC_TICK_INVALID)
+        fakeEsOut()->setExpectedTimestamp(cutover.continuous - cutover.segment.media +
+                                          segmentStart);
+
+    delete currentChunk;
+    currentChunk = nullptr;
+    startupChunks.clear();
+    eof = false;
+    notfound_sequence = 0;
+    last_buffer_status = BufferingStatus::Ongoing;
+    needrestart = false;
+    discontinuity = false;
+    manualBoundarySwitchPending = true;
+    remapTimestampsAfterSwitch = true;
+
+    startTimeContext = SegmentTimes();
+    currentTimeContext = SegmentTimes();
+    currentDuration = 0;
+    prevEndTimeContext = SegmentTimes();
+
+    demuxersource->Reset();
+    if(demuxer)
+    {
+        fakeEsOut()->commandsQueue()->setDrop(true);
+        delete demuxer;
+        demuxer = nullptr;
+        fakeEsOut()->commandsQueue()->setDrop(false);
+    }
+
+    msg_Info(p_realdemux,
+             "adaptive manual switch queued at target segment boundary "
+             "(playhead=%" PRId64 ", boundary=%" PRId64
+             ", wait=%" PRId64 ", dropped=%zu)",
+             playback.segment.media, segmentStart,
+             segmentStart - playback.segment.media, dropped);
+    return true;
+}
+
 void AbstractStream::fillExtraFMTInfo( es_format_t *p_fmt ) const
 {
     if(!p_fmt->psz_language && !language.empty())
@@ -852,7 +976,15 @@ void AbstractStream::trackerEvent(const TrackerEvent &ev)
         {
             const RepresentationSwitchEvent &event =
                     static_cast<const RepresentationSwitchEvent &>(ev);
-            if(demuxer && !inrestart && event.prev)
+            const bool manualCompatible = manualBoundarySwitchPending &&
+                demuxer && event.prev && event.next &&
+                event.prev->getStreamFormat() == event.next->getStreamFormat() &&
+                sameCodecFamilies(event.prev, event.next);
+            if(manualCompatible)
+                msg_Info(p_realdemux,
+                         "adaptive demux restart suppressed for compatible manual switch");
+            manualBoundarySwitchPending = false;
+            if(demuxer && !inrestart && event.prev && !manualCompatible)
             {
                 if(!demuxer->bitstreamSwitchCompatible() ||
                    /* HLS variants can move from TS to Raw AAC */

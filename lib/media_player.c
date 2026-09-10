@@ -966,6 +966,82 @@ libvlc_media_player_get_media( libvlc_media_player_t *p_mi )
     return p_m;
 }
 
+void
+libvlc_adaptive_variant_list_release(libvlc_adaptive_variant_t *variants)
+{
+    while (variants != NULL)
+    {
+        libvlc_adaptive_variant_t *next = variants->p_next;
+        free(variants->psz_id);
+        free(variants->psz_codecs);
+        free(variants);
+        variants = next;
+    }
+}
+
+libvlc_adaptive_variant_t *
+libvlc_media_player_get_adaptive_variants(libvlc_media_player_t *mp)
+{
+    vlc_adaptive_variant_t *internal = NULL;
+    size_t count = 0;
+
+    vlc_player_Lock(mp->player);
+    int ret = vlc_player_GetAdaptiveVariants(mp->player, &internal, &count);
+    vlc_player_Unlock(mp->player);
+    if (ret != VLC_SUCCESS)
+        return NULL;
+
+    libvlc_adaptive_variant_t *head = NULL;
+    libvlc_adaptive_variant_t **tail = &head;
+    for (size_t i = 0; i < count; ++i)
+    {
+        libvlc_adaptive_variant_t *variant = malloc(sizeof(*variant));
+        if (variant == NULL)
+        {
+            for (size_t j = i; j < count; ++j)
+            {
+                free(internal[j].psz_id);
+                free(internal[j].psz_codecs);
+            }
+            free(internal);
+            libvlc_adaptive_variant_list_release(head);
+            return NULL;
+        }
+        variant->psz_id = internal[i].psz_id;
+        variant->psz_codecs = internal[i].psz_codecs;
+        variant->i_width = internal[i].width;
+        variant->i_height = internal[i].height;
+        variant->i_bandwidth = internal[i].bandwidth;
+        variant->i_frame_rate_num = internal[i].frame_rate_num;
+        variant->i_frame_rate_den = internal[i].frame_rate_den;
+        variant->p_next = NULL;
+        *tail = variant;
+        tail = &variant->p_next;
+    }
+    free(internal);
+    return head;
+}
+
+int
+libvlc_media_player_set_adaptive_variant(libvlc_media_player_t *mp,
+                                         const char *id)
+{
+    vlc_player_Lock(mp->player);
+    int ret = vlc_player_SetAdaptiveVariant(mp->player, id);
+    vlc_player_Unlock(mp->player);
+    return ret == VLC_SUCCESS ? 0 : -1;
+}
+
+char *
+libvlc_media_player_get_adaptive_variant(libvlc_media_player_t *mp)
+{
+    char *id = NULL;
+    vlc_player_Lock(mp->player);
+    int ret = vlc_player_GetAdaptiveVariant(mp->player, &id);
+    vlc_player_Unlock(mp->player);
+    return ret == VLC_SUCCESS ? id : NULL;
+}
+
 /**************************************************************************
  * Get the event Manager.
  **************************************************************************/

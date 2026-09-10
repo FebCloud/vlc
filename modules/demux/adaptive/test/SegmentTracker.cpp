@@ -188,6 +188,8 @@ class SegmentTrackerListener : public SegmentTrackerListenerInterface
                     positionchanged.resumeTime = e->resumeTime;
                 }
                     break;
+                case TrackerEvent::Type::RepresentationUpdated:
+                    break;
                 default:
                     return;
             }
@@ -254,6 +256,37 @@ class DummyHLSRepresentation : public HLSRepresentation
         StreamFormat getStreamFormat() const override { return StreamFormat::Type::Unknown; }
         bool needsUpdate(uint64_t) const override { return false; }
         bool runLocalUpdates(SharedResources *) override { return false; }
+        void scheduleNextUpdate(uint64_t, bool) override {}
+};
+
+class DeferredHLSRepresentation : public DummyHLSRepresentation
+{
+    public:
+        DeferredHLSRepresentation(BaseAdaptationSet *set, time_t duration) :
+            DummyHLSRepresentation(set, duration), pendingList(nullptr),
+            loaded(false), updateCount(0) {}
+        ~DeferredHLSRepresentation() override { delete pendingList; }
+        void deferSegmentList(SegmentList *list)
+        {
+            delete pendingList;
+            pendingList = list;
+        }
+        bool needsUpdate(uint64_t) const override { return !loaded; }
+        bool runLocalUpdates(SharedResources *) override
+        {
+            ++updateCount;
+            if(loaded || !pendingList)
+                return false;
+            addAttribute(pendingList);
+            pendingList = nullptr;
+            loaded = true;
+            return true;
+        }
+        unsigned updateCount;
+
+    private:
+        SegmentList *pendingList;
+        bool loaded;
 };
 
 static BaseAdaptationSet *CreatePlaylistPeriodAdaptationSet()
@@ -544,8 +577,8 @@ static int SegmentTracker_check_switches(BaseAdaptationSet *adaptSet,
         delete currentChunk;
         currentChunk = nullptr;
 
-        /* ask logic to switch */
-        logic->repindex = 1;
+        /* A manual selection overrides the automatic logic. */
+        logic->setManualRepresentation(adaptSet, "1");
         /* switch event should not trigger here */
         events.reset();
         currentChunk = tracker->getNextChunk(false);
@@ -581,7 +614,8 @@ static int SegmentTracker_check_switches(BaseAdaptationSet *adaptSet,
         delete currentChunk;
         currentChunk = nullptr;
 
-        /* ask logic to switch back */
+        /* Returning to auto resumes the existing adaptation logic. */
+        logic->setManualRepresentation(nullptr, "");
         logic->repindex = 0;
         events.reset();
         currentChunk = tracker->getNextChunk(true);
@@ -635,6 +669,26 @@ static int SegmentTracker_check_switches(BaseAdaptationSet *adaptSet,
         delete currentChunk;
         currentChunk = nullptr;
 
+        /* Switch at the next complete target GOP, not in the middle of the
+           target segment containing the current playhead. */
+        logic->setManualRepresentation(adaptSet, "1");
+        vlc_tick_t playingStart = VLC_TICK_INVALID;
+        vlc_tick_t playingDuration = VLC_TICK_INVALID;
+        Expect(tracker->prepareSwitchAtNextSegment(
+                   VLC_TICK_0 + timescale.ToTime(START + 50),
+                   &playingStart, &playingDuration) == true);
+        Expect(playingStart == VLC_TICK_0 + timescale.ToTime(START + 100));
+        Expect(playingDuration == timescale.ToTime(100));
+        events.reset();
+        currentChunk = tracker->getNextChunk(true);
+        Expect(currentChunk);
+        Expect(events.occured(TrackerEvent::Type::RepresentationSwitch) == true);
+        Expect(events.representationchanged.next == rep1);
+        Expect(events.segmentchanged.starttime ==
+               VLC_TICK_0 + timescale.ToTime(START + 100));
+        delete currentChunk;
+        currentChunk = nullptr;
+
     } catch( ... ) {
         delete currentChunk;
         return 1;
@@ -655,7 +709,8 @@ static int SegmentTracker_check_HLSseeks(BaseAdaptationSet *adaptSet,
     ChunkInterface *currentChunk = nullptr;
     try
     {
-        DummyHLSRepresentation *rep0 = new DummyHLSRepresentation(adaptSet, 1);
+        /* Matching TARGETDURATION values do not imply matching boundaries. */
+        DummyHLSRepresentation *rep0 = new DummyHLSRepresentation(adaptSet, 10);
         adaptSet->addRepresentation(rep0);
         rep0->setID(ID("0"));
 
@@ -679,7 +734,7 @@ static int SegmentTracker_check_HLSseeks(BaseAdaptationSet *adaptSet,
         }
         rep0->addAttribute(segmentList);
 
-        DummyHLSRepresentation *rep1 = new DummyHLSRepresentation(adaptSet, 3);
+        DummyHLSRepresentation *rep1 = new DummyHLSRepresentation(adaptSet, 10);
         adaptSet->addRepresentation(rep1);
         rep1->setID(ID("1"));
 
@@ -724,6 +779,105 @@ static int SegmentTracker_check_HLSseeks(BaseAdaptationSet *adaptSet,
         currentChunk = nullptr;
 
     } catch( ... ) {
+        delete currentChunk;
+        return 1;
+    }
+
+    return 0;
+}
+
+/****** target media playlist is loaded while the switch is prepared ******/
+static int SegmentTracker_check_HLSDeferredPlaylist(BaseAdaptationSet *adaptSet,
+                                                    DummyLogic *logic,
+                                                    SegmentTracker *tracker,
+                                                    SegmentTrackerListener &events)
+{
+    const stime_t START = 1337;
+    Timescale timescale(100);
+    ChunkInterface *currentChunk = nullptr;
+
+    try
+    {
+        DummyHLSRepresentation *rep0 = new DummyHLSRepresentation(adaptSet, 10);
+        adaptSet->addRepresentation(rep0);
+        rep0->setID(ID("0"));
+
+        SegmentList *sourceList = new SegmentList(rep0);
+        sourceList->addAttribute(new TimescaleAttr(timescale));
+        for(int i = 0; i < 5; ++i)
+        {
+            Segment *seg = new Segment(rep0);
+            seg->setSequenceNumber(i);
+            seg->startTime = START + 100 * i;
+            seg->duration = 100;
+            seg->setSourceUrl("sample/aac");
+            sourceList->addSegment(seg);
+        }
+        rep0->addAttribute(sourceList);
+
+        DeferredHLSRepresentation *rep1 =
+            new DeferredHLSRepresentation(adaptSet, 10);
+        adaptSet->addRepresentation(rep1);
+        rep1->setID(ID("1"));
+
+        SegmentList *targetList = new SegmentList(rep1);
+        targetList->addAttribute(new TimescaleAttr(timescale));
+        for(int i = 0; i < 5; ++i)
+        {
+            Segment *seg = new Segment(rep1);
+            seg->setSequenceNumber(i);
+            seg->startTime = START + 100 * i;
+            seg->duration = 100;
+            seg->setSourceUrl("sample/aac");
+            targetList->addSegment(seg);
+        }
+        InitSegment *initSegment = new InitSegment(rep1);
+        initSegment->setSourceUrl("sample/aacinit");
+        targetList->initialisationSegment = initSegment;
+        rep1->deferSegmentList(targetList);
+
+        Expect(tracker->setStartPosition() == true);
+        currentChunk = tracker->getNextChunk(true);
+        Expect(currentChunk);
+        Expect(events.representationchanged.next == rep0);
+        delete currentChunk;
+        currentChunk = nullptr;
+
+        logic->setManualRepresentation(adaptSet, "1");
+        events.reset();
+        vlc_tick_t playingStart = VLC_TICK_INVALID;
+        vlc_tick_t playingDuration = VLC_TICK_INVALID;
+        Expect(tracker->prepareSwitchAtNextSegment(
+                   VLC_TICK_0 + timescale.ToTime(START + 50),
+                   &playingStart, &playingDuration) == true);
+        Expect(rep1->updateCount == 1);
+        Expect(events.occured(TrackerEvent::Type::RepresentationUpdated) == true);
+        Expect(playingStart == VLC_TICK_0 + timescale.ToTime(START + 100));
+        Expect(playingDuration == timescale.ToTime(100));
+
+        events.reset();
+        currentChunk = tracker->getNextChunk(true);
+        Expect(currentChunk);
+        Expect(events.occured(TrackerEvent::Type::RepresentationSwitch) == true);
+        Expect(events.representationchanged.prev == rep0);
+        Expect(events.representationchanged.next == rep1);
+        Expect(currentChunk->getContentType() == "sample/aacinit");
+        Expect(events.segmentchanged.starttime ==
+               VLC_TICK_0 + timescale.ToTime(START + 100));
+        delete currentChunk;
+        currentChunk = nullptr;
+
+        events.reset();
+        currentChunk = tracker->getNextChunk(true);
+        Expect(currentChunk);
+        Expect(currentChunk->getContentType() == "sample/aac");
+        Expect(events.segmentchanged.starttime ==
+               VLC_TICK_0 + timescale.ToTime(START + 100));
+        delete currentChunk;
+        currentChunk = nullptr;
+    }
+    catch(...)
+    {
         delete currentChunk;
         return 1;
     }
@@ -786,5 +940,6 @@ int SegmentTracker_test()
         Prepare_test(SegmentTracker_check_seeks) ||
         Prepare_test(SegmentTracker_check_switches) ||
         Prepare_test(SegmentTracker_check_HLSseeks) ||
+        Prepare_test(SegmentTracker_check_HLSDeferredPlaylist) ||
         0;
 }

@@ -91,6 +91,8 @@ namespace adaptive
             void setAssociatedTimestamp( vlc_tick_t );
             void setAssociatedTimestamp( vlc_tick_t, vlc_tick_t );
             void setExpectedTimestamp( vlc_tick_t );
+            void setSpliceBeforeMedia( vlc_tick_t );
+            void setDeferredEsHandoff( bool );
             void resetTimestamps();
             size_t esCount() const;
             bool hasSelectedEs() const;
@@ -120,8 +122,11 @@ namespace adaptive
             void setSrcID( const SrcID & );
             void schedulePCRReset();
             void scheduleAllForDeletion(); /* Queue Del commands for non Del issued ones */
+            void scheduleOtherEsForDeletion( AbstractFakeESOutID * );
             void recycleAll(); /* Cancels all commands and send fakees for recycling */
             void gc();
+            void activateDeferredEs( FakeESOutID * );
+            void retireOtherLiveEs( FakeESOutID * );
 
         private:
             friend class LockedFakeESOut;
@@ -150,6 +155,8 @@ namespace adaptive
             std::list<FakeESOutID *> declared;
             SegmentTimes startTimes;
             SynchronizationReference synchronizationReference;
+            vlc_tick_t spliceBeforeMedia;
+            bool deferredEsHandoff;
             SrcID srcID = SrcID::dummy();
     };
 

@@ -46,8 +46,10 @@
 #include <vlc_threads.h>
 
 #include <algorithm>
+#include <cassert>
 #include <ctime>
 #include <limits>
+#include <set>
 
 using namespace adaptive::http;
 using namespace adaptive::logic;
@@ -84,6 +86,7 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
     vlc_mutex_init(&demux.lock);
     vlc_cond_init(&demux.cond);
     vlc_mutex_init(&cached.lock);
+    vlc_mutex_init(&adaptiveControl.lock);
     cached.b_live = false;
     cached.f_position = 0.0;
     cached.i_time = VLC_TICK_INVALID;
@@ -108,6 +111,14 @@ PlaylistManager::~PlaylistManager   ()
 
 void PlaylistManager::unsetPeriod()
 {
+    {
+        vlc_mutex_locker locker(&adaptiveControl.lock);
+        if(logic)
+            logic->setManualRepresentation(nullptr, "");
+        adaptiveControl.variants.clear();
+        adaptiveControl.currentRepresentationID.clear();
+    }
+
     std::vector<AbstractStream *>::iterator it;
     for(it=streams.begin(); it!=streams.end(); ++it)
         delete *it;
@@ -144,6 +155,8 @@ bool PlaylistManager::setupPeriod()
                 continue;
             }
 
+            tracker->registerListener(this);
+
             streams.push_back(st);
 
             /* Generate stream description */
@@ -154,7 +167,227 @@ bool PlaylistManager::setupPeriod()
                 st->setDescription(set->description);
         }
     }
+    refreshAdaptiveVariants();
     return true;
+}
+
+enum class RepresentationKind
+{
+    Video,
+    NonVideo,
+    Unknown,
+};
+
+static RepresentationKind representationKind(BaseRepresentation *rep)
+{
+    if(rep->getWidth() > 0 || rep->getHeight() > 0)
+        return RepresentationKind::Video;
+
+    bool hasNonVideoCodec = false;
+    CodecDescriptionList descriptions;
+    rep->getCodecsDesc(&descriptions);
+    for(const CodecDescription *description : descriptions)
+    {
+        const es_format_t *format = description->getFmt();
+        if(format && format->i_cat == VIDEO_ES)
+            return RepresentationKind::Video;
+        if(format && (format->i_cat == AUDIO_ES || format->i_cat == SPU_ES))
+            hasNonVideoCodec = true;
+    }
+    return hasNonVideoCodec ? RepresentationKind::NonVideo
+                            : RepresentationKind::Unknown;
+}
+
+void PlaylistManager::refreshAdaptiveVariants()
+{
+    std::vector<AdaptiveVariantInfo> variants;
+    std::set<std::string> ids;
+
+    if(currentPeriod)
+    {
+        for(BaseAdaptationSet *set : currentPeriod->getAdaptationSets())
+        {
+            if(!set)
+                continue;
+            for(BaseRepresentation *rep : set->getRepresentations())
+            {
+                if(!rep || representationKind(rep) != RepresentationKind::Video)
+                    continue;
+
+                const std::string id = rep->getID().str();
+                if(id.empty() || !ids.insert(id).second)
+                    continue;
+
+                std::string codecs;
+                for(const std::string &codec : rep->getCodecs())
+                {
+                    if(!codecs.empty())
+                        codecs.append(",");
+                    codecs.append(codec);
+                }
+
+                const Rate &rate = rep->getFrameRate();
+                AdaptiveVariantInfo info = {
+                    id,
+                    set,
+                    rep->getWidth() > 0 ? static_cast<unsigned>(rep->getWidth()) : 0,
+                    rep->getHeight() > 0 ? static_cast<unsigned>(rep->getHeight()) : 0,
+                    rep->getBandwidth(),
+                    rate.num(),
+                    rate.den(),
+                    codecs,
+                };
+                variants.push_back(info);
+            }
+        }
+    }
+
+    std::sort(variants.begin(), variants.end(),
+              [](const AdaptiveVariantInfo &a, const AdaptiveVariantInfo &b) {
+                  if(a.height != b.height)
+                      return a.height < b.height;
+                  if(a.width != b.width)
+                      return a.width < b.width;
+                  return a.bandwidth < b.bandwidth;
+              });
+
+    vlc_mutex_locker locker(&adaptiveControl.lock);
+    adaptiveControl.variants.swap(variants);
+}
+
+int PlaylistManager::getAdaptiveVariants(vlc_adaptive_variant_t **pp_variants,
+                                         size_t *p_count) const
+{
+    if(!pp_variants || !p_count)
+        return VLC_EGENERIC;
+    *pp_variants = nullptr;
+    *p_count = 0;
+
+    vlc_mutex_locker locker(&adaptiveControl.lock);
+    if(adaptiveControl.variants.empty())
+        return VLC_SUCCESS;
+
+    vlc_adaptive_variant_t *out = static_cast<vlc_adaptive_variant_t *>(
+        calloc(adaptiveControl.variants.size(), sizeof(*out)));
+    if(!out)
+        return VLC_ENOMEM;
+
+    size_t copied = 0;
+    for(const AdaptiveVariantInfo &source : adaptiveControl.variants)
+    {
+        vlc_adaptive_variant_t &dest = out[copied];
+        dest.psz_id = strdup(source.id.c_str());
+        dest.psz_codecs = strdup(source.codecs.c_str());
+        if(!dest.psz_id || !dest.psz_codecs)
+        {
+            free(dest.psz_id);
+            free(dest.psz_codecs);
+            for(size_t i = 0; i < copied; ++i)
+            {
+                free(out[i].psz_id);
+                free(out[i].psz_codecs);
+            }
+            free(out);
+            return VLC_ENOMEM;
+        }
+        dest.width = source.width;
+        dest.height = source.height;
+        dest.bandwidth = source.bandwidth;
+        dest.frame_rate_num = source.frameRateNum;
+        dest.frame_rate_den = source.frameRateDen;
+        ++copied;
+    }
+
+    *pp_variants = out;
+    *p_count = copied;
+    return VLC_SUCCESS;
+}
+
+int PlaylistManager::setAdaptiveVariant(const char *psz_id)
+{
+    if(!logic)
+        return VLC_EGENERIC;
+
+    const std::string id = psz_id ? psz_id : "";
+    BaseAdaptationSet *set = nullptr;
+    {
+        vlc_mutex_locker locker(&adaptiveControl.lock);
+        if(!id.empty())
+        {
+            const auto found = std::find_if(adaptiveControl.variants.cbegin(),
+                                            adaptiveControl.variants.cend(),
+                [&id](const AdaptiveVariantInfo &variant) { return variant.id == id; });
+            if(found == adaptiveControl.variants.cend())
+                return VLC_EGENERIC;
+            set = found->adaptationSet;
+        }
+    }
+
+    bool resumeBuffering = false;
+    if(started())
+    {
+        mutex_locker locker {lock};
+        resumeBuffering = b_buffering;
+        b_buffering = false;
+        waitcond.signal();
+    }
+
+    {
+        vlc_mutex_locker locker(&adaptiveControl.lock);
+        logic->setManualRepresentation(set, id);
+    }
+
+    bool boundarySwitch = false;
+    if(set && started())
+    {
+        Times playback;
+        {
+            vlc_mutex_locker locker(&demux.lock);
+            playback = demux.times;
+        }
+        for(AbstractStream *stream : streams)
+            boundarySwitch |= stream->prepareSwitchAtNextSegment(set, playback);
+    }
+
+    if(resumeBuffering)
+        setBufferingRunState(true);
+
+    msg_Info(p_demux, "adaptive quality selection changed to %s%s",
+             id.empty() ? "auto" : id.c_str(),
+             boundarySwitch ? " at next playback segment" : "");
+    if(set && started() && !boundarySwitch)
+        msg_Warn(p_demux,
+                 "adaptive manual switch boundary prepare failed; "
+                 "falling back to delayed representation switch");
+    return VLC_SUCCESS;
+}
+
+int PlaylistManager::getAdaptiveVariant(char **ppsz_id) const
+{
+    if(!ppsz_id)
+        return VLC_EGENERIC;
+    vlc_mutex_locker locker(&adaptiveControl.lock);
+    *ppsz_id = strdup(adaptiveControl.currentRepresentationID.c_str());
+    return *ppsz_id ? VLC_SUCCESS : VLC_ENOMEM;
+}
+
+void PlaylistManager::trackerEvent(const TrackerEvent &event)
+{
+    if(event.getType() != TrackerEvent::Type::RepresentationSwitch)
+        return;
+
+    const RepresentationSwitchEvent &switched =
+        static_cast<const RepresentationSwitchEvent &>(event);
+    const bool previousWasVideo = switched.prev &&
+        representationKind(switched.prev) == RepresentationKind::Video;
+    const bool nextIsVideo = switched.next &&
+        representationKind(switched.next) == RepresentationKind::Video;
+    if(!previousWasVideo && !nextIsVideo)
+        return;
+
+    vlc_mutex_locker locker(&adaptiveControl.lock);
+    adaptiveControl.currentRepresentationID = nextIsVideo
+        ? switched.next->getID().str() : std::string();
 }
 
 bool PlaylistManager::init(bool b_preparsing)
@@ -776,6 +1009,20 @@ int PlaylistManager::doControl(int i_query, va_list args)
         case DEMUX_GET_PTS_DELAY:
             *va_arg (args, vlc_tick_t *) = VLC_TICK_FROM_SEC(1);
             break;
+
+        case DEMUX_GET_ADAPTIVE_VARIANTS:
+        {
+            vlc_adaptive_variant_t **pp_variants =
+                va_arg(args, vlc_adaptive_variant_t **);
+            size_t *p_count = va_arg(args, size_t *);
+            return getAdaptiveVariants(pp_variants, p_count);
+        }
+
+        case DEMUX_SET_ADAPTIVE_VARIANT:
+            return setAdaptiveVariant(va_arg(args, const char *));
+
+        case DEMUX_GET_ADAPTIVE_VARIANT:
+            return getAdaptiveVariant(va_arg(args, char **));
 
         default:
             return VLC_EGENERIC;

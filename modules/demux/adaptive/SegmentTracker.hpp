@@ -229,8 +229,10 @@ namespace adaptive
             ChunkInterface* getNextChunk(bool);
             bool setPositionByTime(vlc_tick_t, bool, bool);
             void setPosition(const Position &, bool);
+            bool prepareSwitchAtNextSegment(vlc_tick_t, vlc_tick_t *, vlc_tick_t *);
             bool setStartPosition();
             Position getStartPosition() const;
+            BaseAdaptationSet *getAdaptationSet() const;
             vlc_tick_t getPlaybackTime(bool = false) const; /* Current segment start time if selected */
             bool getMediaPlaybackRange(vlc_tick_t *, vlc_tick_t *, vlc_tick_t *) const;
             vlc_tick_t getMinAheadTime() const;
@@ -257,6 +259,7 @@ namespace adaptive
             };
             std::list<ChunkEntry> chunkssequence;
             ChunkEntry prepareChunk(bool switch_allowed, Position pos) const;
+            BaseRepresentation *selectRepresentation(BaseRepresentation *) const;
             void resetChunksSequence();
             void setAdaptationLogic(AbstractAdaptationLogic *);
             void notify(const TrackerEvent &) const;

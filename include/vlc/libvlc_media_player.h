@@ -55,6 +55,19 @@ typedef enum libvlc_state_t libvlc_state_t;
 
 typedef struct libvlc_media_player_t libvlc_media_player_t;
 
+/** Description of a selectable representation in an adaptive stream. */
+typedef struct libvlc_adaptive_variant_t
+{
+    char *psz_id;
+    unsigned i_width;
+    unsigned i_height;
+    uint64_t i_bandwidth;
+    unsigned i_frame_rate_num;
+    unsigned i_frame_rate_den;
+    char *psz_codecs;
+    struct libvlc_adaptive_variant_t *p_next;
+} libvlc_adaptive_variant_t;
+
 /**
  * Description for titles
  */
@@ -257,6 +270,23 @@ LIBVLC_API void libvlc_media_player_set_media( libvlc_media_player_t *p_mi,
  *         media is associated
  */
 LIBVLC_API libvlc_media_t * libvlc_media_player_get_media( libvlc_media_player_t *p_mi );
+
+/** Get the video variants advertised by the active adaptive manifest. */
+LIBVLC_API libvlc_adaptive_variant_t *
+libvlc_media_player_get_adaptive_variants(libvlc_media_player_t *p_mi);
+
+/** Release a list returned by libvlc_media_player_get_adaptive_variants(). */
+LIBVLC_API void
+libvlc_adaptive_variant_list_release(libvlc_adaptive_variant_t *p_variants);
+
+/** Select a video variant without reopening media; NULL or empty restores auto. */
+LIBVLC_API int
+libvlc_media_player_set_adaptive_variant(libvlc_media_player_t *p_mi,
+                                         const char *psz_id);
+
+/** Get the current adaptive video variant ID. Release it with libvlc_free(). */
+LIBVLC_API char *
+libvlc_media_player_get_adaptive_variant(libvlc_media_player_t *p_mi);
 
 /**
  * Get the Event Manager from which the media player send event.

@@ -1077,6 +1077,35 @@ vlc_player_GetCurrentMedia(vlc_player_t *player)
 }
 
 int
+vlc_player_GetAdaptiveVariants(vlc_player_t *player,
+                               vlc_adaptive_variant_t **variants,
+                               size_t *count)
+{
+    struct vlc_player_input *input = vlc_player_get_input_locked(player);
+    return input != NULL
+         ? input_GetAdaptiveVariants(input->thread, variants, count)
+         : VLC_EGENERIC;
+}
+
+int
+vlc_player_SetAdaptiveVariant(vlc_player_t *player, const char *id)
+{
+    struct vlc_player_input *input = vlc_player_get_input_locked(player);
+    return input != NULL
+         ? input_SetAdaptiveVariant(input->thread, id)
+         : VLC_EGENERIC;
+}
+
+int
+vlc_player_GetAdaptiveVariant(vlc_player_t *player, char **id)
+{
+    struct vlc_player_input *input = vlc_player_get_input_locked(player);
+    return input != NULL
+         ? input_GetAdaptiveVariant(input->thread, id)
+         : VLC_EGENERIC;
+}
+
+int
 vlc_player_AddAssociatedMedia(vlc_player_t *player,
                               enum es_format_category_e cat, const char *uri,
                               bool select, bool notify, bool check_ext)

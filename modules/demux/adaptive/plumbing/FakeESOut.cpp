@@ -148,6 +148,8 @@ FakeESOut::FakeESOut( es_out_t *es, AbstractCommandsQueue *queue,
     associated.b_timestamp_set = false;
     expected.b_timestamp_set = false;
     priority = ES_PRIORITY_SELECTABLE_MIN;
+    spliceBeforeMedia = VLC_TICK_INVALID;
+    deferredEsHandoff = false;
     vlc_mutex_init(&lock);
 }
 
@@ -180,6 +182,18 @@ void FakeESOut::resetTimestamps()
     setExpectedTimestamp(VLC_TICK_INVALID);
     setAssociatedTimestamp(VLC_TICK_INVALID);
     startTimes = SegmentTimes();
+    spliceBeforeMedia = VLC_TICK_INVALID;
+    deferredEsHandoff = false;
+}
+
+void FakeESOut::setSpliceBeforeMedia(vlc_tick_t ts)
+{
+    spliceBeforeMedia = ts;
+}
+
+void FakeESOut::setDeferredEsHandoff(bool b)
+{
+    deferredEsHandoff = b;
 }
 
 void FakeESOut::setExpectedTimestamp(vlc_tick_t ts)
@@ -257,6 +271,12 @@ void FakeESOut::createOrRecycleRealEsID( AbstractFakeESOutID *es_id_ )
     std::list<FakeESOutID *>::iterator it;
     es_out_id_t *realid = nullptr;
 
+    if( deferredEsHandoff )
+    {
+        es_id->setRealESID( nullptr );
+        return;
+    }
+
     /* declared ES must are temporary until real ES decl */
     recycle_candidates.insert(recycle_candidates.begin(), declared.begin(), declared.end());
     declared.clear();
@@ -325,12 +345,43 @@ void FakeESOut::sendData( AbstractFakeESOutID *id_, block_t *p_block )
     FakeESOutID *id = static_cast<FakeESOutID *>(id_);
     /* Be sure to notify Data before Sending, because UI would still not pick new ES */
     gc();
+    if( deferredEsHandoff && !id->realESID() && !id->scheduledForDeletion() )
+        activateDeferredEs( id );
     if( !id->realESID() ||
         es_out_Send( real_es_out, id->realESID(), p_block ) != VLC_SUCCESS )
     {
         block_Release( p_block );
     }
     gc();
+}
+
+void FakeESOut::activateDeferredEs( FakeESOutID *id )
+{
+    retireOtherLiveEs( id );
+
+    const bool was_deferred = deferredEsHandoff;
+    deferredEsHandoff = false;
+    createOrRecycleRealEsID( id );
+    deferredEsHandoff = was_deferred;
+
+    if( id->realESID() )
+        es_out_Control( real_es_out, ES_OUT_SET_ES, id->realESID() );
+}
+
+void FakeESOut::retireOtherLiveEs( FakeESOutID *keep )
+{
+    const int keep_cat = keep && keep->getFmt() ? keep->getFmt()->i_cat : -1;
+    for( FakeESOutID *es_id : fakeesidlist )
+    {
+        if( es_id == keep || !es_id->realESID() )
+            continue;
+        if( keep_cat != -1 && es_id->getFmt() && es_id->getFmt()->i_cat != keep_cat )
+            continue;
+        es_out_Control( real_es_out, ES_OUT_SET_ES_STATE, es_id->realESID(), false );
+        es_out_Del( real_es_out, es_id->realESID() );
+        es_id->setRealESID( nullptr );
+        es_id->setScheduledForDeletion();
+    }
 }
 
 void FakeESOut::sendMeta( int group, const vlc_meta_t *p_meta )
@@ -392,18 +443,26 @@ void FakeESOut::schedulePCRReset()
 
 void FakeESOut::scheduleAllForDeletion()
 {
+    scheduleOtherEsForDeletion( nullptr );
+}
+
+void FakeESOut::scheduleOtherEsForDeletion( AbstractFakeESOutID *keep_ )
+{
+    FakeESOutID *keep = static_cast<FakeESOutID *>(keep_);
+    const int keep_cat = keep && keep->getFmt() ? keep->getFmt()->i_cat : -1;
     std::list<FakeESOutID *>::const_iterator it;
     for( it=fakeesidlist.begin(); it!=fakeesidlist.end(); ++it )
     {
         FakeESOutID *es_id = *it;
-        if(!es_id->scheduledForDeletion())
+        if( es_id == keep || es_id->scheduledForDeletion() )
+            continue;
+        if( keep && es_id->getFmt() && es_id->getFmt()->i_cat != keep_cat )
+            continue;
+        AbstractCommand *command = commandsfactory->createEsOutDelCommand( es_id );
+        if( likely(command) )
         {
-            AbstractCommand *command = commandsfactory->createEsOutDelCommand( es_id );
-            if( likely(command) )
-            {
-                commandsqueue->Schedule( command );
-                es_id->setScheduledForDeletion();
-            }
+            commandsqueue->Schedule( command );
+            es_id->setScheduledForDeletion();
         }
     }
 }
@@ -653,6 +712,14 @@ int FakeESOut::esOutSend(es_out_id_t *p_es, block_t *p_block)
         assert(times.media != VLC_TICK_INVALID);
     }
 
+    if(spliceBeforeMedia != VLC_TICK_INVALID &&
+       times.media != VLC_TICK_INVALID &&
+       times.media < spliceBeforeMedia)
+    {
+        block_Release(p_block);
+        return VLC_SUCCESS;
+    }
+
    AbstractCommand *command = commandsfactory->createEsOutSendCommand( es_id, times, p_block );
     if( likely(command) )
     {
@@ -670,6 +737,11 @@ void FakeESOut::esOutDel(es_out_id_t *p_es)
     AbstractCommand *command = commandsfactory->createEsOutDelCommand( es_id );
     if( likely(command) )
     {
+        if( commandsqueue->isDropping() )
+        {
+            delete command;
+            return;
+        }
         es_id->setScheduledForDeletion();
         commandsqueue->Schedule( command );
     }
@@ -706,6 +778,11 @@ int FakeESOut::esOutControl(int i_query, va_list args)
                 times.offsetBy(pcr - times.demux);
             }
             else pcr = VLC_TICK_INVALID;
+
+            if(spliceBeforeMedia != VLC_TICK_INVALID &&
+               times.media != VLC_TICK_INVALID &&
+               times.media < spliceBeforeMedia)
+                return VLC_SUCCESS;
 
             AbstractCommand *command = commandsfactory->createEsOutControlPCRCommand( i_group, times, pcr );
             if( likely(command) )
