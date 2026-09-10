@@ -26,6 +26,8 @@
 #include "logic/StartupPolicy.hpp"
 #include "tools/Macros.hpp"
 #include "Streams.hpp"
+#include <vlc_demux.h>
+#include <string>
 #include <vector>
 
 #include <vlc_threads.h>
@@ -49,7 +51,7 @@ namespace adaptive
 
     using StreamPosition = AbstractStream::StreamPosition;
 
-    class PlaylistManager
+    class PlaylistManager : public SegmentTrackerListenerInterface
     {
         PREREQ_VIRTUAL(PlaylistManager);
 
@@ -79,6 +81,8 @@ namespace adaptive
             static int control_callback(demux_t *, int, va_list);
             static int demux_callback(demux_t *);
 
+            void trackerEvent(const TrackerEvent &) override;
+
         protected:
             /* Demux calls */
             virtual int doControl(int, va_list);
@@ -104,6 +108,11 @@ namespace adaptive
             virtual AbstractAdaptationLogic *createLogic(AbstractAdaptationLogic::LogicType,
                                                          AbstractConnectionManager *);
             virtual AbstractBufferingLogic *createBufferingLogic() const;
+
+            void refreshAdaptiveVariants();
+            int getAdaptiveVariants(vlc_adaptive_variant_t **, size_t *) const;
+            int setAdaptiveVariant(const char *);
+            int getAdaptiveVariant(char **) const;
 
             SharedResources                     *resources;
             AbstractAdaptationLogic::LogicType  logicType;
@@ -150,6 +159,25 @@ namespace adaptive
                 vlc_tick_t  playlistLength;
                 time_t      lastupdate;
             } cached;
+
+            struct AdaptiveVariantInfo
+            {
+                std::string id;
+                BaseAdaptationSet *adaptationSet;
+                unsigned width;
+                unsigned height;
+                uint64_t bandwidth;
+                unsigned frameRateNum;
+                unsigned frameRateDen;
+                std::string codecs;
+            };
+
+            struct
+            {
+                std::vector<AdaptiveVariantInfo> variants;
+                std::string currentRepresentationID;
+                mutable vlc_mutex_t lock;
+            } adaptiveControl;
 
             SynchronizationReferences synchronizationReferences;
 

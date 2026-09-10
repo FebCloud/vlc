@@ -210,14 +210,25 @@ void SegmentTracker::getCodecsDesc(CodecDescriptionList *descs) const
 {
     BaseRepresentation *rep = current.rep;
     if(!rep)
-        rep = logic->getNextRepresentation(adaptationSet, nullptr);
+        rep = selectRepresentation(nullptr);
     if(rep)
         rep->getCodecsDesc(descs);
+}
+
+BaseRepresentation *SegmentTracker::selectRepresentation(BaseRepresentation *current) const
+{
+    BaseRepresentation *manual = logic->getManualRepresentation(adaptationSet);
+    return manual ? manual : logic->getNextRepresentation(adaptationSet, current);
 }
 
 const Role & SegmentTracker::getStreamRole() const
 {
     return adaptationSet->getRole();
+}
+
+BaseAdaptationSet *SegmentTracker::getAdaptationSet() const
+{
+    return adaptationSet;
 }
 
 void SegmentTracker::reset()
@@ -270,7 +281,7 @@ SegmentTracker::prepareChunk(bool switch_allowed, Position pos) const
         if(switch_allowed)
         {
             Position temp;
-            temp.rep = logic->getNextRepresentation(adaptationSet, pos.rep);
+            temp.rep = selectRepresentation(pos.rep);
             if(temp.rep && temp.rep != pos.rep)
             {
                 /* Convert our segment number if we need to */
@@ -445,7 +456,7 @@ bool SegmentTracker::setPositionByTime(vlc_tick_t time, bool restarted, bool try
 {
     Position pos = Position(current.rep, current.number);
     if(!pos.isValid())
-        pos.rep = logic->getNextRepresentation(adaptationSet, nullptr);
+        pos.rep = selectRepresentation(nullptr);
 
     if(!pos.rep)
         return false;
@@ -483,10 +494,129 @@ void SegmentTracker::setPosition(const Position &pos, bool restarted)
     notify(PositionChangedEvent(getPlaybackTime(true)));
 }
 
+static vlc_object_t *TrackerVLCObject(BaseAdaptationSet *set)
+{
+    return (set && set->getPlaylist()) ? set->getPlaylist()->getVLCObject() : nullptr;
+}
+
+static void LogManualSwitchRejected(BaseAdaptationSet *set, const char *reason)
+{
+    vlc_object_t *obj = TrackerVLCObject(set);
+    if(obj)
+        msg_Warn(obj, "manual switch boundary rejected: %s", reason);
+}
+
+bool SegmentTracker::prepareSwitchAtNextSegment(vlc_tick_t playbackTime,
+                                                vlc_tick_t *segmentStart,
+                                                vlc_tick_t *segmentDuration)
+{
+    if(!adaptationSet || !current.rep)
+    {
+        LogManualSwitchRejected(adaptationSet, "source segment not found");
+        return false;
+    }
+
+    BaseRepresentation *target = selectRepresentation(current.rep);
+    if(!target || target == current.rep)
+        return false;
+
+    uint64_t number;
+    if(!current.rep->getSegmentNumberByTime(playbackTime, &number))
+    {
+        LogManualSwitchRejected(adaptationSet, "source segment not found");
+        return false;
+    }
+
+    vlc_tick_t start, duration;
+    if(!current.rep->getPlaybackTimeDurationBySegmentNumber(number, &start, &duration) ||
+       duration <= 0)
+    {
+        LogManualSwitchRejected(adaptationSet, "source segment not found");
+        return false;
+    }
+
+    const vlc_tick_t playMedia = playbackTime > VLC_TICK_0
+                               ? playbackTime - VLC_TICK_0
+                               : playbackTime;
+
+    if(target->needsUpdate(number))
+    {
+        const bool updated = target->runLocalUpdates(resources);
+        target->scheduleNextUpdate(number, updated);
+        if(updated)
+            notify(RepresentationUpdatedEvent(target));
+        else
+        {
+            LogManualSwitchRejected(adaptationSet, "target playlist update failed");
+            return false;
+        }
+    }
+
+    uint64_t targetNumber;
+    if(!target->getSegmentNumberByTime(playbackTime, &targetNumber) &&
+       !target->getSegmentNumberByTime(playMedia, &targetNumber) &&
+       !target->getSegmentNumberByTime(start, &targetNumber))
+    {
+        LogManualSwitchRejected(adaptationSet, "target segment not found");
+        return false;
+    }
+
+    vlc_tick_t targetStart, targetDuration;
+    if(!target->getPlaybackTimeDurationBySegmentNumber(targetNumber,
+                                                       &targetStart,
+                                                       &targetDuration) ||
+       targetDuration <= 0)
+    {
+        LogManualSwitchRejected(adaptationSet, "target segment not found");
+        return false;
+    }
+
+    while(targetStart < playMedia)
+    {
+        ++targetNumber;
+        if(!target->getPlaybackTimeDurationBySegmentNumber(targetNumber,
+                                                           &targetStart,
+                                                           &targetDuration) ||
+           targetDuration <= 0)
+        {
+            LogManualSwitchRejected(adaptationSet, "target segment not found");
+            return false;
+        }
+    }
+
+    Position playing(current.rep, number);
+    playing.init_sent = true;
+    playing.index_sent = true;
+    current = playing;
+    next = Position(target, targetNumber);
+    resetChunksSequence();
+    initializing = false;
+
+    vlc_object_t *obj = TrackerVLCObject(adaptationSet);
+    if(obj)
+        msg_Info(obj,
+                 "adaptive manual switch mapped source %s #%" PRIu64
+                 " start=%" PRId64 " end=%" PRId64
+                 " -> target %s #%" PRIu64
+                 " start=%" PRId64 " end=%" PRId64
+                 " boundary_wait=%" PRId64 " init_pending=%d",
+                 current.rep->getID().str().c_str(), number, start, start + duration,
+                 target->getID().str().c_str(), targetNumber,
+                 targetStart, targetStart + targetDuration,
+                 targetStart - playMedia,
+                 target->getInitSegment() ? 1 : 0);
+
+    if(segmentStart)
+        *segmentStart = targetStart + VLC_TICK_0;
+    if(segmentDuration)
+        *segmentDuration = targetDuration;
+    return true;
+}
+
 SegmentTracker::Position SegmentTracker::getStartPosition() const
 {
     Position pos;
-    pos.rep = logic->getNextRepresentation(adaptationSet, nullptr);
+    pos.rep = selectRepresentation(nullptr);
     if(pos.rep)
     {
         /* Ensure ephemere content is updated/loaded */
@@ -518,7 +648,7 @@ vlc_tick_t SegmentTracker::getPlaybackTime(bool b_next) const
 
     BaseRepresentation *rep = current.rep;
     if(!rep)
-        rep = logic->getNextRepresentation(adaptationSet, nullptr);
+        rep = selectRepresentation(nullptr);
 
     if(rep &&
        rep->getPlaybackTimeDurationBySegmentNumber(b_next ? next.number : current.number, &time, &duration))
@@ -540,7 +670,7 @@ vlc_tick_t SegmentTracker::getMinAheadTime() const
 {
     BaseRepresentation *rep = current.rep;
     if(!rep)
-        rep = logic->getNextRepresentation(adaptationSet, nullptr);
+        rep = selectRepresentation(nullptr);
     if(rep)
     {
         /* Ensure ephemere content is updated/loaded */

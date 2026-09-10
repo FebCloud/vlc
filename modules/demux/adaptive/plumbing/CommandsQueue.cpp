@@ -495,6 +495,53 @@ void CommandsQueue::Abort( bool b_reset )
     }
 }
 
+size_t CommandsQueue::PruneAfter( const Times &barrier )
+{
+    LockedCommit();
+
+    size_t dropped = 0;
+    for( auto it = commands.begin(); it != commands.end(); )
+    {
+        const Times &times = it->second->getTimes();
+        const bool afterContinuous =
+            barrier.continuous != VLC_TICK_INVALID &&
+            times.continuous != VLC_TICK_INVALID &&
+            times.continuous >= barrier.continuous;
+        const bool afterMedia =
+            barrier.segment.media != VLC_TICK_INVALID &&
+            times.segment.media != VLC_TICK_INVALID &&
+            times.segment.media >= barrier.segment.media;
+
+        if( afterContinuous || afterMedia )
+        {
+            delete it->second;
+            it = commands.erase( it );
+            ++dropped;
+        }
+        else
+            ++it;
+    }
+
+    bufferinglevel = pcr;
+    bufferinglevel_media = pcr.segment;
+    for( const Queueentry &entry : commands )
+    {
+        const AbstractCommand *command = entry.second;
+        const Times &times = command->getTimes();
+        if( command->getType() == ES_OUT_SET_GROUP_PCR &&
+            times.continuous != VLC_TICK_INVALID &&
+            ( bufferinglevel.continuous == VLC_TICK_INVALID ||
+              times.continuous > bufferinglevel.continuous ) )
+            bufferinglevel = times;
+        if( times.segment.media != VLC_TICK_INVALID &&
+            ( bufferinglevel_media.media == VLC_TICK_INVALID ||
+              times.segment.media > bufferinglevel_media.media ) )
+            bufferinglevel_media = times.segment;
+    }
+
+    return dropped;
+}
+
 bool CommandsQueue::isEmpty() const
 {
     return commands.empty() && incoming.empty();

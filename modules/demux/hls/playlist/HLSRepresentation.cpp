@@ -193,13 +193,17 @@ CodecDescription * HLSRepresentation::makeCodecDescription(const std::string &s)
 
 uint64_t HLSRepresentation::translateSegmentNumber(uint64_t num, const BaseRepresentation *from) const
 {
-    if(targetDuration == static_cast<const HLSRepresentation *>(from)->targetDuration)
-        return num;
-
     ISegment *fromSeg = from->getMediaSegment(num);
     const SegmentList *segmentList = inheritSegmentList();
     if(!fromSeg || !segmentList)
         return std::numeric_limits<uint64_t>::max();
+
+    ISegment *sameNumberSegment = getMediaSegment(num);
+    if(sameNumberSegment &&
+       sameNumberSegment->getDiscontinuitySequenceNumber() ==
+           fromSeg->getDiscontinuitySequenceNumber() &&
+       sameNumberSegment->startTime == fromSeg->startTime)
+        return num;
 
     const uint64_t discontinuitySequence = fromSeg->getDiscontinuitySequenceNumber();
 
@@ -227,8 +231,9 @@ uint64_t HLSRepresentation::translateSegmentNumber(uint64_t num, const BaseRepre
     }
     else if(segmentList->getTotalLength())
     {
-        const SegmentList *fromList = inheritSegmentList();
-        if(fromList)
+        const SegmentList *fromList = from->inheritSegmentList();
+        if(fromList && fromList->getTotalLength() &&
+           !fromList->getSegments().empty() && !segmentList->getSegments().empty())
         {
             stime_t length = fromList->getTotalLength();
             stime_t first = fromList->getSegments().front()->startTime;

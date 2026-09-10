@@ -27,6 +27,7 @@
 
 #include "IDownloadRateObserver.h"
 #include "../SegmentTracker.hpp"
+#include <vlc_threads.h>
 
 namespace adaptive
 {
@@ -46,13 +47,16 @@ namespace adaptive
             public:
                 AbstractAdaptationLogic             () = delete;
                 AbstractAdaptationLogic             (vlc_object_t *);
-                virtual ~AbstractAdaptationLogic    () = default;
+                virtual ~AbstractAdaptationLogic    ();
 
                 virtual BaseRepresentation* getNextRepresentation(BaseAdaptationSet *, BaseRepresentation *) = 0;
                 void                        updateDownloadRate     (const ID &, size_t,
                                                                     vlc_tick_t, vlc_tick_t) override;
                 void                        trackerEvent           (const TrackerEvent &) override {}
                 void                        setMaxDeviceResolution (int, int);
+                void                        setManualRepresentation(BaseAdaptationSet *,
+                                                                    const std::string &);
+                BaseRepresentation         *getManualRepresentation(BaseAdaptationSet *) const;
 
                 enum class LogicType
                 {
@@ -69,6 +73,11 @@ namespace adaptive
                 vlc_object_t *p_obj;
                 int maxwidth;
                 int maxheight;
+
+            private:
+                mutable vlc_mutex_t manualRepresentationLock;
+                BaseAdaptationSet *manualAdaptationSet;
+                std::string manualRepresentationID;
         };
     }
 }

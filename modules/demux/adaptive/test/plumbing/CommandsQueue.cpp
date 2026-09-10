@@ -130,6 +130,32 @@ int CommandsQueue_test()
         queue.Abort(true);
         esout.cleanup();
 
+        /* Keep commands before the replacement GOP and discard prefetched
+           commands at and after its cutover boundary. */
+        for(size_t i=0; i<5; i++)
+        {
+            block_t *data = block_Alloc(0);
+            Expect(data);
+            data->i_dts = VLC_TICK_0 + vlc_tick_from_sec(i);
+            SegmentTimes segmentTimes(VLC_TICK_INVALID,
+                                      VLC_TICK_0 + vlc_tick_from_sec(i));
+            cmd = factory.createEsOutSendCommand(id0, segmentTimes, data);
+            queue.Schedule(cmd);
+            cmd = factory.createEsOutControlPCRCommand(
+                0, segmentTimes, VLC_TICK_0 + vlc_tick_from_sec(i));
+            queue.Schedule(cmd);
+        }
+        Times cutover(SegmentTimes(VLC_TICK_INVALID,
+                                   VLC_TICK_0 + vlc_tick_from_sec(3)),
+                      VLC_TICK_0 + vlc_tick_from_sec(3));
+        Expect(queue.PruneAfter(cutover) == 4);
+        Expect(queue.getBufferingLevel().continuous ==
+               VLC_TICK_0 + vlc_tick_from_sec(2));
+        queue.Process(DT(VLC_TICK_0 + vlc_tick_from_sec(10)));
+        Expect(esout.output.size() == 3);
+        esout.cleanup();
+        queue.Abort(true);
+
         /* Feed data in */
         for(size_t i=0; i<10; i++)
         {

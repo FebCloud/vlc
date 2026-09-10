@@ -26,6 +26,8 @@
 #endif
 
 #include "AbstractAdaptationLogic.h"
+#include "../playlist/BaseAdaptationSet.h"
+#include "../playlist/BaseRepresentation.h"
 
 #include <limits>
 
@@ -36,6 +38,12 @@ AbstractAdaptationLogic::AbstractAdaptationLogic    (vlc_object_t *obj)
     p_obj = obj;
     maxwidth = std::numeric_limits<int>::max();
     maxheight = std::numeric_limits<int>::max();
+    manualAdaptationSet = nullptr;
+    vlc_mutex_init(&manualRepresentationLock);
+}
+
+AbstractAdaptationLogic::~AbstractAdaptationLogic()
+{
 }
 
 void AbstractAdaptationLogic::updateDownloadRate    (const adaptive::ID &, size_t,
@@ -47,4 +55,24 @@ void AbstractAdaptationLogic::setMaxDeviceResolution (int w, int h)
 {
     maxwidth = (w > 0) ? w : std::numeric_limits<int>::max();
     maxheight = (h > 0) ? h : std::numeric_limits<int>::max();
+}
+
+void AbstractAdaptationLogic::setManualRepresentation(BaseAdaptationSet *set,
+                                                       const std::string &id)
+{
+    vlc_mutex_locker locker(&manualRepresentationLock);
+    manualAdaptationSet = id.empty() ? nullptr : set;
+    manualRepresentationID = id;
+}
+
+BaseRepresentation *AbstractAdaptationLogic::getManualRepresentation(BaseAdaptationSet *set) const
+{
+    std::string id;
+    {
+        vlc_mutex_locker locker(&manualRepresentationLock);
+        if(!set || manualAdaptationSet != set || manualRepresentationID.empty())
+            return nullptr;
+        id = manualRepresentationID;
+    }
+    return set->getRepresentationByID(ID(id));
 }

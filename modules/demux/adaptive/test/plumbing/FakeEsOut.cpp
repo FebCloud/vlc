@@ -580,6 +580,56 @@ static int check1(es_out_t *out, DummyEsOut *ctx, FakeESOut *fakees)
     return 0;
 }
 
+static int checkSplice(es_out_t *out, DummyEsOut *ctx, FakeESOut *fakees)
+{
+    es_format_t fmt;
+    es_format_Init(&fmt, VIDEO_ES, VLC_CODEC_H264);
+    es_out_id_t *id = es_out_Add(out, &fmt);
+    fakees->commandsQueue()->Commit();
+    fakees->commandsQueue()->Process(drainTimes);
+
+    try
+    {
+        vlc_tick_t mediaref = TMS(10000);
+        SegmentTimes segmentTimes(VLC_TICK_INVALID, mediaref, mediaref);
+        fakees->setSegmentStartTimes(segmentTimes);
+
+        PCR(TMS(0));
+        for(int i=0; i<=5000; i += 1000)
+            SEND(TMS(i));
+        PCR(TMS(5000));
+
+        Times playhead;
+        playhead.continuous = TMS(2000);
+        playhead.segment = segmentTimes;
+        playhead.segment.offsetBy(DMS(2000));
+        Expect(fakees->commandsQueue()->PruneAfter(playhead) > 0);
+
+        /* Map a replacement stream that restarts its DTS at zero onto the
+           selected target segment, dropping only overlap before cutover. */
+        fakees->setSynchronizationReference(SynchronizationReference());
+        fakees->setSegmentStartTimes(segmentTimes);
+        fakees->setSpliceBeforeMedia(mediaref + DMS(2000));
+
+        SEND(TMS(0));
+        SEND(TMS(1000));
+        SEND(TMS(2000));
+        SEND(TMS(3000));
+        PCR(TMS(3000));
+
+        fakees->commandsQueue()->Process(drainTimes);
+        Expect(ctx->dts == TMS(3000));
+        Expect(fakees->commandsQueue()->getBufferingLevel().segment.media >=
+               mediaref + DMS(2000));
+    }
+    catch(...)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
 static int check0(es_out_t *out, DummyEsOut *, FakeESOut *fakees)
 {
     es_format_t fmt;
@@ -631,9 +681,9 @@ int FakeEsOut_test()
     dummy.dummyesout = &dummyEsOut;
     dummy.esout.cbs = &dummycbs;
 
-    int(* const tests[4])(es_out_t *, DummyEsOut *, FakeESOut *)
-            = { check0, check1, check2, check3 };
-    for(size_t i=0; i<4; i++)
+    int(* const tests[5])(es_out_t *, DummyEsOut *, FakeESOut *)
+            = { check0, check1, check2, check3, checkSplice };
+    for(size_t i=0; i<5; i++)
     {
         CommandsFactory *factory = new CommandsFactory();
         CommandsQueue *queue = new CommandsQueue();

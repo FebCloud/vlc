@@ -206,6 +206,44 @@ input_item_t *input_GetItem( input_thread_t *p_input )
     return input_priv(p_input)->p_item;
 }
 
+int input_GetAdaptiveVariants(input_thread_t *input,
+                              vlc_adaptive_variant_t **variants,
+                              size_t *count)
+{
+    input_thread_private_t *priv = input_priv(input);
+    vlc_mutex_lock(&priv->lock_master);
+    int ret = priv->master != NULL && priv->master->p_demux != NULL
+            ? demux_Control(priv->master->p_demux,
+                            DEMUX_GET_ADAPTIVE_VARIANTS, variants, count)
+            : VLC_EGENERIC;
+    vlc_mutex_unlock(&priv->lock_master);
+    return ret;
+}
+
+int input_SetAdaptiveVariant(input_thread_t *input, const char *id)
+{
+    input_thread_private_t *priv = input_priv(input);
+    vlc_mutex_lock(&priv->lock_master);
+    int ret = priv->master != NULL && priv->master->p_demux != NULL
+            ? demux_Control(priv->master->p_demux,
+                            DEMUX_SET_ADAPTIVE_VARIANT, id)
+            : VLC_EGENERIC;
+    vlc_mutex_unlock(&priv->lock_master);
+    return ret;
+}
+
+int input_GetAdaptiveVariant(input_thread_t *input, char **id)
+{
+    input_thread_private_t *priv = input_priv(input);
+    vlc_mutex_lock(&priv->lock_master);
+    int ret = priv->master != NULL && priv->master->p_demux != NULL
+            ? demux_Control(priv->master->p_demux,
+                            DEMUX_GET_ADAPTIVE_VARIANT, id)
+            : VLC_EGENERIC;
+    vlc_mutex_unlock(&priv->lock_master);
+    return ret;
+}
+
 #undef input_Create
 input_thread_t * input_Create( vlc_object_t *p_parent, input_item_t *p_item,
                                const struct vlc_input_thread_cfg *cfg )
@@ -219,6 +257,7 @@ input_thread_t * input_Create( vlc_object_t *p_parent, input_item_t *p_item,
     if( unlikely(priv == NULL) )
         return NULL;
 
+    vlc_mutex_init(&priv->lock_master);
     priv->master = InputSourceNew( NULL );
     if( !priv->master )
     {
@@ -1332,13 +1371,17 @@ static int Init( input_thread_t * p_input )
     master = priv->master;
     if( master == NULL )
         goto error;
+    vlc_mutex_lock(&priv->lock_master);
     int ret = InputSourceInit( master, p_input, priv->p_item->psz_uri,
                                NULL, false );
     if( ret != VLC_SUCCESS )
     {
         InputSourceDestroy( master );
+        master->p_demux = NULL;
+        vlc_mutex_unlock(&priv->lock_master);
         goto error;
     }
+    vlc_mutex_unlock(&priv->lock_master);
 
     InitProperties( p_input );
 
@@ -1447,8 +1490,11 @@ static void End( input_thread_t * p_input )
     }
     free( priv->slave );
 
-    /* Clean up master */
+    /* Clean up master after all in-flight adaptive controls have returned. */
+    vlc_mutex_lock(&priv->lock_master);
     InputSourceDestroy( priv->master );
+    priv->master->p_demux = NULL;
+    vlc_mutex_unlock(&priv->lock_master);
     priv->i_title_offset = 0;
     priv->i_seekpoint_offset = 0;
 

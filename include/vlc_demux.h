@@ -30,6 +30,18 @@
 #include <vlc_stream.h>
 #include <vlc_es_out.h>
 
+/** Description of a selectable representation in an adaptive stream. */
+typedef struct vlc_adaptive_variant_t
+{
+    char *psz_id;
+    unsigned width;
+    unsigned height;
+    uint64_t bandwidth;
+    unsigned frame_rate_num;
+    unsigned frame_rate_den;
+    char *psz_codecs;
+} vlc_adaptive_variant_t;
+
 /**
  * \defgroup demux Demultiplexer
  * \ingroup input
@@ -287,7 +299,12 @@ enum demux_query_e
      * work in future VLC versions, nor with all demux filters
      */
     DEMUX_FILTER_ENABLE,
-    DEMUX_FILTER_DISABLE
+    DEMUX_FILTER_DISABLE,
+
+    /** Adaptive-stream representation controls. */
+    DEMUX_GET_ADAPTIVE_VARIANTS = 0x500,
+    DEMUX_SET_ADAPTIVE_VARIANT,
+    DEMUX_GET_ADAPTIVE_VARIANT
 };
 
 /*************************************************************************

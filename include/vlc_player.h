@@ -63,6 +63,7 @@ digraph player_states {
  * Player opaque structure.
  */
 typedef struct vlc_player_t vlc_player_t;
+struct vlc_adaptive_variant_t;
 
 /**
  * Player lock type (normal or reentrant)
@@ -426,6 +427,20 @@ vlc_player_SetNextMedia(vlc_player_t *player, input_item_t *media);
  */
 VLC_API input_item_t *
 vlc_player_GetCurrentMedia(vlc_player_t *player);
+
+/** Get adaptive video representations from the active input demuxer. */
+VLC_API int
+vlc_player_GetAdaptiveVariants(vlc_player_t *player,
+                               struct vlc_adaptive_variant_t **variants,
+                               size_t *count);
+
+/** Select an adaptive video representation, or automatic mode with NULL/empty. */
+VLC_API int
+vlc_player_SetAdaptiveVariant(vlc_player_t *player, const char *id);
+
+/** Get the adaptive video representation currently used by the segment tracker. */
+VLC_API int
+vlc_player_GetAdaptiveVariant(vlc_player_t *player, char **id);
 
 /**
  * Get the next played media.
