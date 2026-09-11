@@ -2476,6 +2476,38 @@ static void EsOutDestroyDecoder(es_out_sys_t *sys,
     es_format_Clean( &p_es->fmt_out );
 }
 
+/* Whether a running decoder can be kept when its es format is replaced.
+ *
+ * Adaptive streams switch between encodings of the same codec, so only the
+ * picture size moves. A decoder reads its out-of-band codec data (i_extra)
+ * once when it is opened, so reuse is only safe while that data is identical
+ * and the bitstream carries its own configuration; a container that ships new
+ * codec data (a fresh EXT-X-MAP, say) still needs a new decoder. Everything
+ * the video output derives its configuration from is checked as well. */
+static bool EsOutCanReuseDecoder( const es_format_t *p_old, const es_format_t *p_new )
+{
+    if( p_old->i_cat != VIDEO_ES || p_new->i_cat != VIDEO_ES )
+        return false;
+
+    if( p_old->i_codec != p_new->i_codec )
+        return false;
+
+    if( p_old->i_extra != p_new->i_extra )
+        return false;
+    if( p_old->i_extra > 0 &&
+        memcmp( p_old->p_extra, p_new->p_extra, p_old->i_extra ) != 0 )
+        return false;
+
+    if( p_old->video.orientation != p_new->video.orientation )
+        return false;
+    if( p_old->video.projection_mode != p_new->video.projection_mode )
+        return false;
+    if( p_old->video.multiview_mode != p_new->video.multiview_mode )
+        return false;
+
+    return true;
+}
+
 static void EsOutSelectEs(es_out_sys_t *p_sys, es_out_id_t *es, bool b_force, enum vlc_vout_order vout_order)
 {
     input_thread_t *p_input = p_sys->p_input;
@@ -3543,7 +3575,30 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
         if( es == NULL || es->fmt.i_cat != p_fmt->i_cat
          || (es->fmt.i_id != p_fmt->i_id && p_fmt->i_id != -1)
          || es->fmt.i_group != p_fmt->i_group )
+        {
+            if( es != NULL )
+                msg_Dbg( p_sys->p_input,
+                         "ES_OUT_SET_ES_FMT rejected: %s (cat %d->%d, id 0x%x->0x%x, "
+                         "group %d->%d)",
+                         es->fmt.i_cat != p_fmt->i_cat ? "category" :
+                         (es->fmt.i_id != p_fmt->i_id && p_fmt->i_id != -1) ? "id"
+                                                                            : "group",
+                         es->fmt.i_cat, p_fmt->i_cat,
+                         es->fmt.i_id, p_fmt->i_id,
+                         es->fmt.i_group, p_fmt->i_group );
             return VLC_EGENERIC;
+        }
+
+        const bool b_reuse_decoder = es->p_dec != NULL &&
+            EsOutCanReuseDecoder( &es->fmt, p_fmt );
+        if( es->p_dec != NULL && !b_reuse_decoder && es->fmt.i_cat == VIDEO_ES )
+            msg_Dbg( p_sys->p_input,
+                     "decoder not reusable for the new format: codec %4.4s->%4.4s, "
+                     "extra %zu->%zu, orientation %d->%d, projection %d->%d",
+                     (const char *)&es->fmt.i_codec, (const char *)&p_fmt->i_codec,
+                     es->fmt.i_extra, p_fmt->i_extra,
+                     es->fmt.video.orientation, p_fmt->video.orientation,
+                     es->fmt.video.projection_mode, p_fmt->video.projection_mode );
 
         const int i_id = es->fmt.i_id;
         es_format_Clean( &es->fmt );
@@ -3556,15 +3611,27 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
         EsOutFillEsFmt(p_sys, &es->fmt);
         EsOutUpdateEsLanguageTitle(es, &es->fmt);
 
-        const bool b_was_selected = EsIsSelected( es );
-        if( es->p_dec )
+        if( b_reuse_decoder )
         {
-            EsOutDrainDecoder(p_sys, es, true);
-            EsOutDestroyDecoder(p_sys, es);
+            /* The same decoder keeps decoding the new bitstream and reports
+             * the new picture size itself, so the video output it holds is
+             * kept as well instead of being torn down and rebuilt. */
+            msg_Dbg( p_sys->p_input,
+                     "reusing the decoder for the new format of ES 0x%x",
+                     es->fmt.i_id );
         }
+        else
+        {
+            const bool b_was_selected = EsIsSelected( es );
+            if( es->p_dec )
+            {
+                EsOutDrainDecoder(p_sys, es, true);
+                EsOutDestroyDecoder(p_sys, es);
+            }
 
-        if(b_was_selected)
-            EsOutCreateDecoder(p_sys, es);
+            if(b_was_selected)
+                EsOutCreateDecoder(p_sys, es);
+        }
 
         EsOutSendEsEvent(p_sys, es, VLC_INPUT_ES_UPDATED, false, VLC_VOUT_ORDER_PRIMARY);
 
