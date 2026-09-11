@@ -3625,7 +3625,13 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
             const bool b_was_selected = EsIsSelected( es );
             if( es->p_dec )
             {
-                EsOutDrainDecoder(p_sys, es, true);
+                /* Signal the drain but do not wait for it: the decoder is
+                 * destroyed right after, so waiting only holds the demux
+                 * thread (see the FIXME in EsOutDrainDecoder). While it is
+                 * held, no pcr reaches the es out, which then reads the next
+                 * one as late and resets, flushing the decoder that was about
+                 * to replace this one. */
+                EsOutDrainDecoder(p_sys, es, false);
                 EsOutDestroyDecoder(p_sys, es);
             }
 
