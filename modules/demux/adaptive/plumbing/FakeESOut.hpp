@@ -128,6 +128,7 @@ namespace adaptive
             void gc();
             void activateDeferredEs( FakeESOutID * );
             void retireOtherLiveEs( FakeESOutID * );
+            FakeESOutID *findReusableLiveEs( const FakeESOutID * ) const;
 
         private:
             friend class LockedFakeESOut;

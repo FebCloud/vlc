@@ -358,8 +358,65 @@ void FakeESOut::sendData( AbstractFakeESOutID *id_, block_t *p_block )
     gc();
 }
 
+FakeESOutID *FakeESOut::findReusableLiveEs( const FakeESOutID *incoming ) const
+{
+    const es_format_t *fmt = incoming->getFmt();
+    for( FakeESOutID *es_id : fakeesidlist )
+    {
+        if( es_id == incoming || !es_id->realESID() ||
+            es_id->scheduledForDeletion() )
+            continue;
+        const es_format_t *live = es_id->getFmt();
+        if( live->i_cat != fmt->i_cat || live->i_codec != fmt->i_codec )
+            continue;
+        /* Only the es that is actually playing can be taken over: an
+         * unselected one would swallow the incoming data instead of
+         * displaying it. */
+        if( !hasSelectedEs( es_id ) )
+            continue;
+        return es_id;
+    }
+    return nullptr;
+}
+
 void FakeESOut::activateDeferredEs( FakeESOutID *id )
 {
+    /* Prefer taking the live es over to updating it in place. That keeps the
+     * es_out entry, its decoder and the video output it holds, so a quality
+     * switch no longer deletes and recreates the whole decoding pipeline at
+     * the switch point. ES_OUT_SET_ES_FMT decides whether the running decoder
+     * can actually be kept; when it can not, the rebuild below still keeps the
+     * video output object, which the replacement decoder reuses. */
+    FakeESOutID *live = findReusableLiveEs( id );
+    if( live != nullptr )
+    {
+        es_out_id_t *realid = live->realESID();
+
+        /* A rendition switch legitimately moves to another pid, but
+         * ES_OUT_SET_ES_FMT only accepts a format that still describes the
+         * same track. Keep the id and group of the es being taken over; the
+         * rest of the format describes the incoming rendition. */
+        es_format_t fmt;
+        es_format_Copy( &fmt, id->getFmt() );
+        const es_format_t *current = live->getFmt();
+        fmt.i_id = current->i_id;
+        fmt.i_group = current->i_group;
+
+        const int ret = es_out_Control( real_es_out, ES_OUT_SET_ES_FMT,
+                                        realid, &fmt );
+        es_format_Clean( &fmt );
+        if( ret == VLC_SUCCESS )
+        {
+            /* The incoming fake id now owns the live es; the outgoing fake id
+             * becomes a plain bookkeeping entry that gc() can drop without
+             * touching the es out. */
+            live->setRealESID( nullptr );
+            live->setScheduledForDeletion();
+            id->setRealESID( realid );
+            return;
+        }
+    }
+
     retireOtherLiveEs( id );
 
     const bool was_deferred = deferredEsHandoff;
