@@ -113,6 +113,7 @@ namespace adaptive
             int getAdaptiveVariants(vlc_adaptive_variant_t **, size_t *) const;
             int setAdaptiveVariant(const char *);
             int getAdaptiveVariant(char **) const;
+            void preparePendingAdaptiveSwitch();
 
             SharedResources                     *resources;
             AbstractAdaptationLogic::LogicType  logicType;
@@ -176,6 +177,8 @@ namespace adaptive
             {
                 std::vector<AdaptiveVariantInfo> variants;
                 std::string currentRepresentationID;
+                BaseAdaptationSet *pendingBoundarySet;
+                std::string pendingRepresentationID;
                 mutable vlc_mutex_t lock;
             } adaptiveControl;
 
