@@ -87,6 +87,8 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
     vlc_cond_init(&demux.cond);
     vlc_mutex_init(&cached.lock);
     vlc_mutex_init(&adaptiveControl.lock);
+    adaptiveControl.pendingBoundarySet = nullptr;
+    adaptiveControl.pendingRepresentationID.clear();
     cached.b_live = false;
     cached.f_position = 0.0;
     cached.i_time = VLC_TICK_INVALID;
@@ -117,6 +119,8 @@ void PlaylistManager::unsetPeriod()
             logic->setManualRepresentation(nullptr, "");
         adaptiveControl.variants.clear();
         adaptiveControl.currentRepresentationID.clear();
+        adaptiveControl.pendingBoundarySet = nullptr;
+        adaptiveControl.pendingRepresentationID.clear();
     }
 
     std::vector<AbstractStream *>::iterator it;
@@ -253,6 +257,8 @@ void PlaylistManager::refreshAdaptiveVariants()
 
     vlc_mutex_locker locker(&adaptiveControl.lock);
     adaptiveControl.variants.swap(variants);
+    adaptiveControl.pendingBoundarySet = nullptr;
+    adaptiveControl.pendingRepresentationID.clear();
 }
 
 int PlaylistManager::getAdaptiveVariants(vlc_adaptive_variant_t **pp_variants,
@@ -323,43 +329,68 @@ int PlaylistManager::setAdaptiveVariant(const char *psz_id)
         }
     }
 
-    bool resumeBuffering = false;
-    if(started())
-    {
-        mutex_locker locker {lock};
-        resumeBuffering = b_buffering;
-        b_buffering = false;
-        waitcond.signal();
-    }
-
     {
         vlc_mutex_locker locker(&adaptiveControl.lock);
-        logic->setManualRepresentation(set, id);
-    }
-
-    bool boundarySwitch = false;
-    if(set && started())
-    {
-        Times playback;
+        if(!set)
         {
-            vlc_mutex_locker locker(&demux.lock);
-            playback = demux.times;
+            logic->setManualRepresentation(nullptr, "");
+            adaptiveControl.pendingBoundarySet = nullptr;
+            adaptiveControl.pendingRepresentationID.clear();
         }
-        for(AbstractStream *stream : streams)
-            boundarySwitch |= stream->prepareSwitchAtNextSegment(set, playback);
+        else if(!started())
+        {
+            logic->setManualRepresentation(set, id);
+            adaptiveControl.pendingBoundarySet = nullptr;
+            adaptiveControl.pendingRepresentationID.clear();
+        }
+        else
+        {
+            /* Keep the current bufferize() on the old representation. Applying
+             * the pin immediately lets prepareChunk() switch mid-download, after
+             * which boundary prepare sees target==current and becomes a no-op. */
+            adaptiveControl.pendingBoundarySet = set;
+            adaptiveControl.pendingRepresentationID = id;
+        }
     }
-
-    if(resumeBuffering)
-        setBufferingRunState(true);
+    if(set && started())
+        waitcond.signal();
 
     msg_Info(p_demux, "adaptive quality selection changed to %s%s",
              id.empty() ? "auto" : id.c_str(),
-             boundarySwitch ? " at next playback segment" : "");
-    if(set && started() && !boundarySwitch)
+             set && started() ? "; boundary preparation queued" : "");
+    return VLC_SUCCESS;
+}
+
+void PlaylistManager::preparePendingAdaptiveSwitch()
+{
+    BaseAdaptationSet *set;
+    std::string id;
+    {
+        vlc_mutex_locker locker(&adaptiveControl.lock);
+        set = adaptiveControl.pendingBoundarySet;
+        id = adaptiveControl.pendingRepresentationID;
+        adaptiveControl.pendingBoundarySet = nullptr;
+        adaptiveControl.pendingRepresentationID.clear();
+        if(set)
+            logic->setManualRepresentation(set, id);
+    }
+    if(!set)
+        return;
+
+    Times playback;
+    {
+        vlc_mutex_locker locker(&demux.lock);
+        playback = demux.times;
+    }
+
+    bool boundarySwitch = false;
+    for(AbstractStream *stream : streams)
+        boundarySwitch |= stream->prepareSwitchAtNextSegment(set, playback);
+
+    if(!boundarySwitch)
         msg_Warn(p_demux,
                  "adaptive manual switch boundary prepare failed; "
                  "falling back to delayed representation switch");
-    return VLC_SUCCESS;
 }
 
 int PlaylistManager::getAdaptiveVariant(char **ppsz_id) const
@@ -1066,6 +1097,7 @@ void PlaylistManager::Run()
                 startupPolicy.getMinBuffering(i_upstream_min_buffering);
         AbstractStream::BufferingStatus i_return = bufferize(pcr, i_min_buffering,
                                                              i_max_buffering, i_target_buffering);
+        preparePendingAdaptiveSwitch();
 
         if(i_return != AbstractStream::BufferingStatus::Lessthanmin)
         {
