@@ -73,6 +73,7 @@ PlaylistManager::PlaylistManager( demux_t *p_demux_,
                               var_InheritBool(p_demux_, "adaptive-startup-media") )
 {
     currentPeriod = playlist->getFirstPeriod();
+    initialHeight = var_InheritInteger(p_demux_, "adaptive-initial-height");
     resources = res;
     bufferingLogic = nullptr;
     failedupdates = 0;
@@ -172,6 +173,29 @@ bool PlaylistManager::setupPeriod()
         }
     }
     refreshAdaptiveVariants();
+    if(initialHeight && !b_preparsing)
+    {
+        /* setupPeriod precedes tracker positioning and any segment request.
+         * Preserve the full master and use the normal manual-selection state,
+         * so a later explicit Auto request can release this pin. */
+        const AdaptiveVariantInfo *selected = nullptr;
+        for(const auto &variant : adaptiveControl.variants)
+            if(variant.height == initialHeight &&
+               (!selected || variant.bandwidth > selected->bandwidth))
+                selected = &variant;
+        if(!selected)
+        {
+            msg_Err(p_demux, "requested initial video height %u is unavailable",
+                    initialHeight);
+            return false;
+        }
+        logic->setManualRepresentation(selected->adaptationSet, selected->id);
+        msg_Dbg(p_demux, "locked initial video height %u before segment selection",
+                initialHeight);
+        /* This is an open-time option, not a constraint to reapply after
+         * switching to Auto, seeking, or advancing to another period. */
+        initialHeight = 0;
+    }
     return true;
 }
 

@@ -122,6 +122,7 @@ namespace adaptive
             AbstractStreamFactory               *streamFactory;
             demux_t                             *p_demux;
             StartupPolicy                       startupPolicy;
+            unsigned                            initialHeight;
             std::vector<AbstractStream *>        streams;
             BasePeriod                          *currentPeriod;
             bool                                 b_preparsing;

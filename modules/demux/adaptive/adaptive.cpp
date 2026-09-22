@@ -142,6 +142,12 @@ vlc_module_begin ()
                      ADAPT_WIDTH_TEXT,  nullptr )
         add_integer( "adaptive-maxheight", 0,
                      ADAPT_HEIGHT_TEXT, nullptr )
+        add_integer( "adaptive-initial-height", 0,
+                     N_("Initial manually selected video height"),
+                     N_("Lock a video representation of this exact height before "
+                        "the first segment. Zero keeps automatic selection. "
+                        "Opening fails if the requested height is unavailable.") )
+            change_integer_range(0, 16384)
         add_integer( "adaptive-bw",     250, ADAPT_BW_TEXT,     ADAPT_BW_LONGTEXT )
         add_bool   ( "adaptive-use-access", false, ADAPT_ACCESS_TEXT, ADAPT_ACCESS_LONGTEXT )
         add_integer( "adaptive-livedelay",
