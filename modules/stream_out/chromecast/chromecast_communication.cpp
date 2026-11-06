@@ -350,8 +350,17 @@ std::string ChromecastCommunication::GetMedia( const std::string& mime,
     msg_Dbg( m_module, "s_chromecast_url: %s", chromecast_url.str().c_str());
 
     ss << "\"contentId\":\"" << chromecast_url.str() << "\""
-       << ",\"streamType\":\"LIVE\""
+       << ( m_duration > 0 ? ",\"streamType\":\"BUFFERED\"" : ",\"streamType\":\"LIVE\"" )
        << ",\"contentType\":\"" << mime << "\"";
+
+    if ( m_duration > 0 )
+        ss << ",\"duration\":" << m_duration;
+
+    if ( !m_subtitleUrl.empty() )
+        ss << ",\"tracks\":[{\"trackId\":1,\"type\":\"TEXT\",\"subtype\":\"SUBTITLES\""
+           << ",\"trackContentId\":\"" << m_subtitleUrl << "\""
+           << ",\"trackContentType\":\"text/vtt\",\"name\":\"Subtitles\"}]"
+           << ",\"textTrackStyle\":{\"backgroundColor\":\"#00000000\",\"edgeType\":\"OUTLINE\",\"edgeColor\":\"#000000FF\",\"foregroundColor\":\"#FFFFFFFF\"}";
 
     return ss.str();
 }
@@ -363,6 +372,7 @@ unsigned ChromecastCommunication::msgPlayerLoad( const std::string& destinationI
     std::stringstream ss;
     ss << "{\"type\":\"LOAD\","
        <<  "\"media\":{" << GetMedia( mime, p_meta ) << "},"
+       <<  ( m_subtitleUrl.empty() ? "" : "\"activeTrackIds\":[1]," )
        <<  "\"autoplay\":\"false\","
        <<  "\"requestId\":" << id
        << "}";
