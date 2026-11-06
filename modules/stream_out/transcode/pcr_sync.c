@@ -161,15 +161,15 @@ static int pcr_sync_SignalPCRLocked(vlc_pcr_sync_t *pcr_sync, vlc_tick_t pcr)
     struct es_data data;
     vlc_vector_foreach(data, &pcr_sync->es_data)
     {
-        if (!data.is_deleted)
-        {
-            vlc_vector_push(&event->es_last_dts_entries,
-                            ((struct es_dts_entry){.dts = data.last_input_dts,
-                                                   .discontinuity = data.discontinuity}));
-            if (data.last_input_dts != VLC_TICK_INVALID)
-                ++entries_left;
-            data.discontinuity = VLC_TICK_INVALID;
-        }
+        /* One entry per ES id (entries are indexed by id): a deleted ES gets
+         * an entry that is not waited for. */
+        const vlc_tick_t dts = data.is_deleted ? VLC_TICK_INVALID : data.last_input_dts;
+        vlc_vector_push(&event->es_last_dts_entries,
+                        ((struct es_dts_entry){.dts = dts,
+                                               .discontinuity = data.discontinuity}));
+        if (dts != VLC_TICK_INVALID)
+            ++entries_left;
+        data.discontinuity = VLC_TICK_INVALID;
     }
 
     event->pcr = pcr;
@@ -265,9 +265,20 @@ vlc_pcr_sync_SignalFrameOutput(vlc_pcr_sync_t *pcr_sync, unsigned int id, const 
     if (pcr_event == NULL)
         goto no_pcr;
 
-    assert(id < pcr_event->es_last_dts_entries.size);
-
     const vlc_tick_t pcr = pcr_event->pcr;
+
+    /* An ES added after this PCR, or one that had no frame yet when it came,
+     * is not waited for by this PCR: move on without touching its counters
+     * (indexing past the entries crashed with a subtitle ES burned in). */
+    if (id >= pcr_event->es_last_dts_entries.size ||
+        pcr_event->es_last_dts_entries.data[id].dts == VLC_TICK_INVALID)
+    {
+        if (!pcr_event->no_frame_before)
+        {
+            es->last_pcr_event = pcr_event_NextEntry(&pcr_sync->pcr_events, pcr_event);
+            goto no_pcr;
+        }
+    }
 
     if (pcr_event->no_frame_before)
     {
@@ -294,6 +305,13 @@ vlc_pcr_sync_SignalFrameOutput(vlc_pcr_sync_t *pcr_sync, unsigned int id, const 
         goto no_pcr;
 
 return_pcr:
+    /* ES that were not waited for may still point at this event. */
+    {
+        pcr_event_t *next = pcr_event_NextEntry(&pcr_sync->pcr_events, pcr_event);
+        for (size_t i = 0; i < pcr_sync->es_data.size; ++i)
+            if (pcr_sync->es_data.data[i].last_pcr_event == pcr_event)
+                pcr_sync->es_data.data[i].last_pcr_event = next;
+    }
     vlc_list_remove(&pcr_event->node);
     pcr_event_Delete(pcr_event);
 
