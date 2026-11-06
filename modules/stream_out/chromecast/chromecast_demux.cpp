@@ -89,7 +89,11 @@ struct demux_cc
 
         if (demux_Control( p_demux->s, DEMUX_CAN_SEEK, &m_can_seek ) != VLC_SUCCESS)
             m_can_seek = false;
-        if (demux_Control( p_demux->s, DEMUX_GET_LENGTH, &m_length ) != VLC_SUCCESS)
+        /* DEMUX_GET_LENGTH also returns whether the stream is live: the
+         * adaptive (HLS, DASH) demuxer writes it, and wrote it through
+         * whatever followed on the stack (crash casting local HLS). */
+        bool live;
+        if (demux_Control( p_demux->s, DEMUX_GET_LENGTH, &m_length, &live ) != VLC_SUCCESS)
             m_length = -1;
         p_renderer->pf_set_input_length( p_renderer->p_opaque, m_length );
 
