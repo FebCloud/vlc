@@ -95,7 +95,10 @@ static int Control(stream_t *access, int query, va_list args)
             break;
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t *) = DEFAULT_PTS_DELAY;
+            /* imem-caching (ms): the reader may be a network (a Blu-ray image
+             * read over HTTP), where 300 ms left every slow read a stall. */
+            *va_arg(args, vlc_tick_t *) =
+                VLC_TICK_FROM_MS(var_InheritInteger(access, "imem-caching"));
             break;
 
         case STREAM_SET_PAUSE_STATE:
@@ -104,7 +107,6 @@ static int Control(stream_t *access, int query, va_list args)
         default:
             return VLC_EGENERIC;
     }
-    (void) access;
     return VLC_SUCCESS;
 }
 
@@ -154,6 +156,12 @@ vlc_module_begin()
     set_shortname(N_("Memory stream"))
     set_description(N_("In-memory stream input"))
     set_subcategory(SUBCAT_INPUT_ACCESS)
+
+    add_integer("imem-caching", MS_FROM_VLC_TICK(DEFAULT_PTS_DELAY),
+                N_("Caching value (ms)"),
+                N_("How long input from the read callbacks is buffered."))
+        change_integer_range(0, 60000)
+        change_safe()
 
     add_shortcut("imem")
     set_capability("access", 0)
