@@ -152,6 +152,10 @@ struct filter_sys_t
 static block_t *DoWork( filter_t *, block_t * );
 static void *Thread( void * );
 
+/* An anonymous namespace: several modules define this struct, and in one
+ * static library they shared one constructor (blend got the spatial audio
+ * mixer's operations and crashed). */
+namespace {
 static const struct FilterOperationInitializer {
     struct vlc_filter_operations ops {};
     FilterOperationInitializer()
@@ -160,6 +164,7 @@ static const struct FilterOperationInitializer {
         ops.close = Close;
     }
 } filter_ops;
+}
 
 /**
  * Open the module
