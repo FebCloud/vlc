@@ -48,16 +48,35 @@ char *vlc_getProxyUrl(const char *url)
     if (NULL != proxySettings) {
         NSURL *requestedURL = [[NSURL alloc] initWithString:[NSString stringWithUTF8String:url]];
         NSString *scheme = requestedURL.scheme;
+        if (!scheme.length)
+            return NULL;
+        if ([scheme caseInsensitiveCompare:@"http"] == NSOrderedSame ||
+            [scheme caseInsensitiveCompare:@"https"] == NSOrderedSame) {
+            // Ask CFNetwork for this destination, so disabled proxies and bypass
+            // rules (including local NAS addresses) still result in a direct connection.
+            NSArray *proxies = CFBridgingRelease(CFNetworkCopyProxiesForURL(
+                (__bridge CFURLRef)requestedURL, (__bridge CFDictionaryRef)proxySettings));
+            NSDictionary *proxy = proxies.firstObject;
+            NSString *type = proxy[(NSString *)kCFProxyTypeKey];
+            if (![type isEqualToString:(NSString *)kCFProxyTypeHTTP] &&
+                ![type isEqualToString:(NSString *)kCFProxyTypeHTTPS])
+                return NULL;
+
+            // kCFProxyTypeHTTPS means an HTTP CONNECT tunnel for an HTTPS
+            // destination, NOT TLS to the proxy. TLS to the origin stays enabled.
+            NSString *host = proxy[(NSString *)kCFProxyHostNameKey];
+            NSNumber *port = proxy[(NSString *)kCFProxyPortNumberKey];
+            if (!host.length || port.intValue < 1 || port.intValue > 65535)
+                return NULL;
+            if ([host containsString:@":"] && ![host hasPrefix:@"["])
+                host = [NSString stringWithFormat:@"[%@]", host];
+            NSString *value = [NSString stringWithFormat:@"http://%@:%i", host, port.intValue];
+            return strdup(value.UTF8String);
+        }
         NSString *proxyHost;
         NSNumber *proxyPort;
 
-        if ([scheme caseInsensitiveCompare:@"http"] == NSOrderedSame) {
-            proxyHost = proxySettings[(NSString *)kCFNetworkProxiesHTTPProxy];
-            proxyPort = proxySettings[(NSString *)kCFNetworkProxiesHTTPPort];
-        } else if ([scheme caseInsensitiveCompare:@"https"] == NSOrderedSame) {
-            proxyHost = proxySettings[(NSString *)kCFNetworkProxiesHTTPSProxy];
-            proxyPort = proxySettings[(NSString *)kCFNetworkProxiesHTTPSPort];
-        } else if ([scheme caseInsensitiveCompare:@"rtsp"] == NSOrderedSame) {
+        if ([scheme caseInsensitiveCompare:@"rtsp"] == NSOrderedSame) {
             proxyHost = proxySettings[(NSString *)kCFNetworkProxiesRTSPProxy];
             proxyPort = proxySettings[(NSString *)kCFNetworkProxiesRTSPPort];
         } else if ([scheme caseInsensitiveCompare:@"ftp"] == NSOrderedSame) {

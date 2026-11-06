@@ -176,7 +176,7 @@ static struct vlc_http_msg *vlc_https_request(struct vlc_http_mgr *mgr,
     char *proxy = vlc_http_proxy_find(host, port, true);
     if (proxy != NULL)
     {
-        tls = vlc_https_connect_proxy(mgr->creds, mgr->creds,
+        tls = vlc_https_connect_proxy(mgr->logger, mgr->creds,
                                       host, port, &http2, proxy);
         free(proxy);
     }
