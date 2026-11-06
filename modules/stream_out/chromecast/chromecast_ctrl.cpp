@@ -590,8 +590,11 @@ bool intf_sys_t::processMessage(const castchannel::CastMessage &msg)
         && (namespace_ != NAMESPACE_RECEIVER)
         && (namespace_ != NAMESPACE_MEDIA)
         && (namespace_ != NAMESPACE_CONNECTION)) {
-        msg_Err( m_module, "Unknown namespace: %s", namespace_.c_str());
-        return false;
+        /* Newer devices (Google TV Streamer) also send multizone and other
+         * status messages: ignore them. Returning false ended the control
+         * loop, and the device's media status was never read again. */
+        msg_Dbg( m_module, "Ignoring namespace: %s", namespace_.c_str());
+        return true;
     }
 
     struct chromecast_ctrl_json sys;
