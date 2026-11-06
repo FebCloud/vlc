@@ -475,9 +475,10 @@ static picture_t * RenderSubpictures( sout_stream_id_sys_t *id, picture_t *p_pic
     {
         if( filter_chain_IsEmpty( id->p_f_chain ) )
         {
-            /* We can't modify the picture, we need to duplicate it,
-                 * in this point the picture is already p_encoder->fmt.in format*/
-            picture_t *p_tmp = video_new_buffer_encoder( id->encoder );
+            /* We can't modify the picture, we need to duplicate it. Subpictures
+             * are blended before the final conversion (see below), so keep the
+             * picture's own format rather than the encoder's input format. */
+            picture_t *p_tmp = picture_NewFromFormat( &p_pic->format );
             if( likely( p_tmp ) )
             {
                 picture_Copy( p_tmp, p_pic );
@@ -527,20 +528,20 @@ static int transcode_process_picture( sout_stream_id_sys_t *id,
         for( ;; p_in = NULL /* drain second time */ )
         {
             /* Run user specified filter chain */
-            filter_chain_t * secondary_chains[] = { id->p_uf_chain,
-                                                    id->p_final_conv_static };
-            for( size_t i=0; i<ARRAY_SIZE(secondary_chains); i++ )
-            {
-                if( !secondary_chains[i] )
-                    continue;
-                p_in = filter_chain_VideoFilter( secondary_chains[i], p_in );
-            }
+            if( id->p_uf_chain )
+                p_in = filter_chain_VideoFilter( id->p_uf_chain, p_in );
+
+            /* Blend subpictures before converting to the encoder's input
+             * format: blend cannot draw onto hardware (CVPX) pictures, which
+             * the VideoToolbox encoder takes. */
+            if( p_in )
+                p_in = RenderSubpictures( id, p_in );
+
+            if( id->p_final_conv_static )
+                p_in = filter_chain_VideoFilter( id->p_final_conv_static, p_in );
 
             if( !p_in )
                 break;
-
-            /* Blend subpictures */
-            p_in = RenderSubpictures( id, p_in );
 
             if( p_in )
             {
