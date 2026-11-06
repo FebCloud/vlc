@@ -340,6 +340,10 @@ static int allocateBuffers(filter_spatialaudio *p_sys)
     return VLC_SUCCESS;
 }
 
+/* An anonymous namespace: several modules define this struct, and in one
+ * static library they shared one constructor (blend got the spatial audio
+ * mixer's operations and crashed). */
+namespace {
 static const struct FilterOperationInitializer {
     struct vlc_filter_operations ops {};
     FilterOperationInitializer()
@@ -350,6 +354,7 @@ static const struct FilterOperationInitializer {
         ops.close = Close;
     }
 } filter_ops;
+}
 
 static int OpenBinauralizer(vlc_object_t *p_this)
 {
