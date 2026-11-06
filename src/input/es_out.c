@@ -971,7 +971,11 @@ static void EsOutChangePosition(es_out_sys_t *p_sys, bool b_flush,
         input_clock_Reset(pgrm->p_input_clock);
         vlc_clock_main_Lock(pgrm->clocks.main);
         pgrm->i_last_pcr = VLC_TICK_INVALID;
-        vlc_clock_Reset(pgrm->clocks.input);
+        /* The input clock is created on the program's first PCR
+         * (EsOutProgramHandleClockSource): a program that has not sent one yet
+         * (an HLS alternate audio rendition) has none to reset. */
+        if (pgrm->clocks.input != NULL)
+            vlc_clock_Reset(pgrm->clocks.input);
         vlc_clock_main_Unlock(pgrm->clocks.main);
     }
 
