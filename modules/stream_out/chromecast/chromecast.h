@@ -123,6 +123,10 @@ public:
     unsigned msgAuth();
     unsigned msgPlayerLoad( const std::string& destinationId,
                             const std::string& mime, const vlc_meta_t *p_meta, vlc_tick_t input_length );
+    /* WebVTT file loaded as the media's text track and shown (empty: none) */
+    std::string m_subtitleUrl;
+    /* Stream length in seconds given by the caller (0: use the input's length) */
+    double m_duration = 0;
     unsigned msgPlayerPlay( const std::string& destinationId, int64_t mediaSessionId );
     unsigned msgPlayerStop( const std::string& destinationId, int64_t mediaSessionId );
     unsigned msgPlayerPause( const std::string& destinationId, int64_t mediaSessionId );
@@ -178,6 +182,8 @@ struct intf_sys_t
     void setDemuxEnabled(bool enabled, on_paused_changed_itf on_paused_changed,
                          void *on_paused_changed_data);
     void requestPlayerStop();
+    void setSubtitleUrl(const char *url);
+    void setDuration(double seconds);
     States state() const;
 
     void setPacing(bool do_pace);

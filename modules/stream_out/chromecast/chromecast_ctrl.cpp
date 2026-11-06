@@ -424,6 +424,18 @@ void intf_sys_t::tryLoad()
         m_state = Loading;
 }
 
+void intf_sys_t::setSubtitleUrl(const char *url)
+{
+    vlc::threads::mutex_locker lock( m_lock );
+    m_communication->m_subtitleUrl = url ? url : "";
+}
+
+void intf_sys_t::setDuration(double seconds)
+{
+    vlc::threads::mutex_locker lock( m_lock );
+    m_communication->m_duration = seconds;
+}
+
 void intf_sys_t::setRetryOnFail( bool enabled )
 {
     vlc::threads::mutex_locker locker(m_lock);

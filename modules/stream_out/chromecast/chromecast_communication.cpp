@@ -369,6 +369,10 @@ std::string ChromecastCommunication::GetMedia( const std::string& mime,
 
     msg_Dbg( m_module, "s_chromecast_url: %s", chromecast_url.c_str());
 
+    /* A length given with #chromecast{duration=} wins over the input's: a
+     * transcoded or segmented stream does not always report one. */
+    if (m_duration > 0)
+        input_length = vlc_tick_from_sec(m_duration);
     const bool is_buffered = input_length > VLC_TICK_0;
     const char *stream_type;
     if (is_buffered)
@@ -390,6 +394,12 @@ std::string ChromecastCommunication::GetMedia( const std::string& mime,
         ss << ",\"duration\":" << duration.str();
     }
 
+    if ( !m_subtitleUrl.empty() )
+        ss << ",\"tracks\":[{\"trackId\":1,\"type\":\"TEXT\",\"subtype\":\"SUBTITLES\""
+           << ",\"trackContentId\":\"" << m_subtitleUrl << "\""
+           << ",\"trackContentType\":\"text/vtt\",\"name\":\"Subtitles\"}]"
+           << ",\"textTrackStyle\":{\"backgroundColor\":\"#00000000\",\"edgeType\":\"OUTLINE\",\"edgeColor\":\"#000000FF\",\"foregroundColor\":\"#FFFFFFFF\"}";
+
     return ss.str();
 }
 
@@ -400,6 +410,7 @@ unsigned ChromecastCommunication::msgPlayerLoad( const std::string& destinationI
     std::stringstream ss;
     ss << "{\"type\":\"LOAD\","
        <<  "\"media\":{" << GetMedia( mime, p_meta, input_length ) << "},"
+       <<  ( m_subtitleUrl.empty() ? "" : "\"activeTrackIds\":[1]," )
        <<  "\"requestId\":" << id
        << "}";
 

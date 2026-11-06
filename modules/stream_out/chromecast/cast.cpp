@@ -191,7 +191,7 @@ static int AccessOpen(vlc_object_t *);
 static void AccessClose(vlc_object_t *);
 
 static const char *const ppsz_sout_options[] = {
-    "ip", "port", "http-port", "video", "device-name", NULL
+    "ip", "port", "http-port", "video", "device-name", "subtitle", "duration", NULL
 };
 
 /*****************************************************************************
@@ -229,6 +229,12 @@ vlc_module_begin ()
     add_string(SOUT_CFG_PREFIX "device-name", NULL, NULL, NULL)
         change_private()
     add_bool(SOUT_CFG_PREFIX "video", true, NULL, NULL)
+        change_private()
+    /* A WebVTT file (http URL the device can reach, with CORS) shown as subtitles */
+    add_string(SOUT_CFG_PREFIX "subtitle", NULL, NULL, NULL)
+        change_private()
+    /* Seconds the stream lasts: the device then shows a seekable (BUFFERED) item, not LIVE */
+    add_string(SOUT_CFG_PREFIX "duration", NULL, NULL, NULL)
         change_private()
     add_integer(SOUT_CFG_PREFIX "http-port", HTTP_PORT, HTTP_PORT_TEXT, HTTP_PORT_LONGTEXT)
     add_obsolete_string(SOUT_CFG_PREFIX "mux") /* since 4.0.0 */
@@ -1350,6 +1356,20 @@ static int Open(vlc_object_t *p_this)
     }
 
     b_supports_video = var_GetBool(p_stream, SOUT_CFG_PREFIX "video");
+    {
+        char *psz_subtitle = var_GetNonEmptyString(p_stream, SOUT_CFG_PREFIX "subtitle");
+        if (psz_subtitle)
+        {
+            p_intf->setSubtitleUrl(psz_subtitle);
+            free(psz_subtitle);
+        }
+        char *psz_duration = var_GetNonEmptyString(p_stream, SOUT_CFG_PREFIX "duration");
+        if (psz_duration)
+        {
+            p_intf->setDuration(atof(psz_duration));
+            free(psz_duration);
+        }
+    }
 
     try
     {
