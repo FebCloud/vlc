@@ -165,7 +165,8 @@ static int PushBlockUnlocked(encoder_t *enc, CMSampleBufferRef sampleBuffer)
     }
 
     block_t *header = NULL;
-    if (isIDR && !sys->header)
+    /* Repeat SPS/PPS before every IDR: TS/HTTP clients (TVs) join mid-stream. */
+    if (isIDR)
     {
         CMFormatDescriptionRef description =
             CMSampleBufferGetFormatDescription(sampleBuffer);
@@ -251,6 +252,11 @@ parse_block:
 
         if (header)
         {
+            /* The gathered block takes the first block's dates and flags: without
+             * them the muxer drops the whole IDR ("non dated packet dropped"). */
+            header->i_pts = block->i_pts;
+            header->i_dts = block->i_dts;
+            header->i_flags = block->i_flags;
             header->p_next = block;
             block = block_ChainGather(header);
             assert(block != NULL);
@@ -305,6 +311,108 @@ static void CloseEncoder(encoder_t *encoder)
     p_sys->session = NULL;
 }
 
+/* Keyframe every 2 s so late joiners can start decoding, honour the
+ * requested bitrate and favour real-time output (streaming/casting). */
+static void SetStreamProperties(encoder_t *enc, VTCompressionSessionRef session)
+{
+    VTSessionSetProperty(session,
+            kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
+    int32_t gop_seconds = 2;
+    CFNumberRef gop = CFNumberCreate(NULL, kCFNumberSInt32Type, &gop_seconds);
+    VTSessionSetProperty(session,
+            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, gop);
+    CFRelease(gop);
+    if (enc->fmt_out.i_bitrate > 0)
+    {
+        int32_t bitrate = enc->fmt_out.i_bitrate;
+        CFNumberRef rate = CFNumberCreate(NULL, kCFNumberSInt32Type, &bitrate);
+        VTSessionSetProperty(session,
+                kVTCompressionPropertyKey_AverageBitRate, rate);
+        CFRelease(rate);
+    }
+    VTSessionSetProperty(session,
+            kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+}
+
+static void ParameterSetsCallback(void *refcon, void *frame, OSStatus status,
+        VTEncodeInfoFlags flags, CMSampleBufferRef sampleBuffer)
+{
+    (void)frame; (void)flags;
+    CMFormatDescriptionRef *description = refcon;
+    if (status != noErr || sampleBuffer == NULL || *description != NULL)
+        return;
+    CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (format != NULL)
+        *description = (CMFormatDescriptionRef)CFRetain(format);
+}
+
+/* Muxers that write the codec setup in their header (Matroska for the
+ * Chromecast output, MP4) need SPS/PPS before the first frame, and VideoToolbox
+ * only tells them once it has encoded one. Encode a black frame with an
+ * identical throwaway session and publish its parameter sets as extra data. */
+static void SetParameterSets(encoder_t *enc)
+{
+    int width = enc->fmt_in.video.i_visible_width;
+    int height = enc->fmt_in.video.i_visible_height;
+    CMFormatDescriptionRef description = NULL;
+    VTCompressionSessionRef session;
+    if (VTCompressionSessionCreate(NULL, width, height, kCMVideoCodecType_H264,
+            NULL, NULL, NULL, ParameterSetsCallback, &description, &session) != noErr)
+        return;
+    SetStreamProperties(enc, session);
+
+    CFDictionaryRef surface = CFDictionaryCreate(NULL, NULL, NULL, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const void *keys[] = { kCVPixelBufferIOSurfacePropertiesKey };
+    const void *values[] = { surface };
+    CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(surface);
+    CVPixelBufferRef black;
+    if (CVPixelBufferCreate(NULL, width, height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, attributes, &black) == kCVReturnSuccess)
+    {
+        CVPixelBufferLockBaseAddress(black, 0);
+        for (size_t plane = 0; plane < 2; plane++)
+            memset(CVPixelBufferGetBaseAddressOfPlane(black, plane), plane ? 128 : 16,
+                   CVPixelBufferGetBytesPerRowOfPlane(black, plane) *
+                   CVPixelBufferGetHeightOfPlane(black, plane));
+        CVPixelBufferUnlockBaseAddress(black, 0);
+        VTCompressionSessionEncodeFrame(session, black, CMTimeMake(0, CLOCK_FREQ),
+                kCMTimeInvalid, NULL, NULL, NULL);
+        VTCompressionSessionCompleteFrames(session, kCMTimeInvalid);
+        CFRelease(black);
+    }
+    CFRelease(attributes);
+    VTCompressionSessionInvalidate(session);
+    CFRelease(session);
+    if (description == NULL)
+        return;
+
+    static const uint8_t startcode[] = {0x00, 0x00, 0x00, 0x01};
+    const uint8_t *sps, *pps;
+    size_t sps_length, pps_length;
+    if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(description,
+            0, &sps, &sps_length, NULL, NULL) == noErr &&
+        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(description,
+            1, &pps, &pps_length, NULL, NULL) == noErr)
+    {
+        size_t size = 2 * sizeof(startcode) + sps_length + pps_length;
+        uint8_t *extra = malloc(size);
+        if (extra != NULL)
+        {
+            memcpy(extra, startcode, sizeof(startcode));
+            memcpy(extra + sizeof(startcode), sps, sps_length);
+            memcpy(extra + sizeof(startcode) + sps_length, startcode, sizeof(startcode));
+            memcpy(extra + 2 * sizeof(startcode) + sps_length, pps, pps_length);
+            free(enc->fmt_out.p_extra);
+            enc->fmt_out.p_extra = extra;
+            enc->fmt_out.i_extra = size;
+        }
+    }
+    CFRelease(description);
+}
+
 static int OpenEncoder(vlc_object_t *obj)
 {
     encoder_t *enc = (encoder_t *)obj;
@@ -344,6 +452,8 @@ static int OpenEncoder(vlc_object_t *obj)
     if (ret != noErr)
         goto error_property;
 
+    SetStreamProperties(enc, sys->session);
+
     static const struct vlc_encoder_operations ops =
     {
         .encode_video = EncodeCallback,
@@ -372,6 +482,8 @@ static int OpenEncoder(vlc_object_t *obj)
     enc->fmt_out.video.i_frame_rate_base =
         enc->fmt_in.video.i_frame_rate_base;
     enc->fmt_out.i_codec = VLC_CODEC_H264;
+
+    SetParameterSets(enc);
 
     msg_Info(enc, "Videotoolbox encoding %4.4s framerate %d/%d size %dx%d",
              (const char *)&enc->fmt_out.i_codec,
