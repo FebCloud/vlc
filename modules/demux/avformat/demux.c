@@ -979,10 +979,23 @@ static int Demux( demux_t *p_demux )
     if( p_frame->i_dts != VLC_TICK_INVALID && p_track->p_es != NULL )
         p_track->i_pcr = p_frame->i_dts;
 
+    /* Sparse subtitle tracks (a Blu-ray's PGS streams) must not drive the
+     * PCR: their last timestamp holds it back for seconds, then it jumps
+     * forward, the input clock sees a gap each time and resets, and audio
+     * and video drift apart. Use them only when nothing else is there. */
+    bool b_has_av = false;
+    for( unsigned i = 0; i < p_sys->i_tracks; i++ )
+    {
+        if( p_sys->tracks[i].p_es != NULL &&
+            p_sys->ic->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE )
+            b_has_av = true;
+    }
+
     vlc_tick_t i_ts_max = VLC_TICK_MIN;
     for( unsigned i = 0; i < p_sys->i_tracks; i++ )
     {
-        if( p_sys->tracks[i].p_es != NULL )
+        if( p_sys->tracks[i].p_es != NULL &&
+            !( b_has_av && p_sys->ic->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ) )
             i_ts_max = __MAX( i_ts_max, p_sys->tracks[i].i_pcr );
     }
 
@@ -990,6 +1003,7 @@ static int Demux( demux_t *p_demux )
     for( unsigned i = 0; i < p_sys->i_tracks; i++ )
     {
         if( p_sys->tracks[i].p_es != NULL &&
+            !( b_has_av && p_sys->ic->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ) &&
                 p_sys->tracks[i].i_pcr != VLC_TICK_INVALID &&
                 p_sys->tracks[i].i_pcr + VLC_TICK_FROM_SEC(10)>= i_ts_max )
             i_ts_min = __MIN( i_ts_min, p_sys->tracks[i].i_pcr );
