@@ -125,6 +125,9 @@ block_t *hxxx_AnnexB_to_xVC( block_t *p_block, uint8_t i_nal_length_size )
         block_t *p_newblock = block_Alloc( i_dest );
         if( unlikely(!p_newblock) )
             goto error;
+        /* Keep the timestamps and flags: VideoToolbox otherwise gets every
+         * picture undated (3-byte start codes, e.g. Blu-ray via avformat). */
+        block_CopyProperties( p_newblock, p_block );
 
         p_release = p_block; /* Will be released after use */
         p_source = p_release->p_buffer;
