@@ -37,6 +37,9 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
 #include "../platform_fonts.h"
 #include "backends.h"
 
@@ -98,6 +101,58 @@ static CFIndex getFontIndexInFontFile(const char* psz_filePath, const char* psz_
     CFRelease(targetFontName);
     CFRelease(fontDescriptors);
     CFRelease(url);
+    return index;
+}
+
+/* The index FreeType opens a face with. getFontIndexInFontFile() returns the
+ * position among CoreText's descriptors of the file, which is not that: iOS's
+ * PingFangUI.ttc lists hundreds of descriptors (variable-font instances) for a
+ * few faces, so CJK fallbacks failed to open and nothing was drawn. Match the
+ * PostScript name against each face and named instance instead. */
+static CFIndex getFreeTypeIndex(const char *psz_filePath, CTFontDescriptorRef descriptor)
+{
+    CFStringRef name = CTFontDescriptorCopyAttribute(descriptor, kCTFontNameAttribute);
+    if (name == NULL)
+        return kCFNotFound;
+    char *psz_name = FromCFString(name, kCFStringEncodingUTF8);
+    CFRelease(name);
+    if (psz_name == NULL)
+        return kCFNotFound;
+
+    CFIndex index = kCFNotFound;
+    FT_Library library;
+    if (FT_Init_FreeType(&library) == 0)
+    {
+        FT_Face face;
+        FT_Long faces = 0;
+        if (FT_New_Face(library, psz_filePath, -1, &face) == 0)
+        {
+            faces = face->num_faces;
+            FT_Done_Face(face);
+        }
+        for (FT_Long i = 0; i < faces && index == kCFNotFound; i++)
+        {
+            if (FT_New_Face(library, psz_filePath, i, &face) != 0)
+                continue;
+            FT_Long instances = face->style_flags >> 16;
+            const char *ps = FT_Get_Postscript_Name(face);
+            if (ps != NULL && strcmp(ps, psz_name) == 0)
+                index = i;
+            FT_Done_Face(face);
+            for (FT_Long j = 1; j <= instances && index == kCFNotFound; j++)
+            {
+                FT_Long id = (j << 16) | i;
+                if (FT_New_Face(library, psz_filePath, id, &face) != 0)
+                    continue;
+                ps = FT_Get_Postscript_Name(face);
+                if (ps != NULL && strcmp(ps, psz_name) == 0)
+                    index = id;
+                FT_Done_Face(face);
+            }
+        }
+        FT_Done_FreeType(library);
+    }
+    free(psz_name);
     return index;
 }
 
@@ -286,7 +341,9 @@ int CoreText_GetFamily(vlc_font_select_t *fs, const char *psz_lcname,
         }
 
         /* get the index of the font family in the font file */
-        CFIndex fontIndex = getFontIndexInFontFile(path, psz_lcname);
+        CFIndex fontIndex = getFreeTypeIndex(path, iter);
+        if (fontIndex == kCFNotFound)
+            fontIndex = getFontIndexInFontFile(path, psz_lcname);
         if (fontIndex == kCFNotFound) {
             FREENULL(path);
             continue;
@@ -380,7 +437,9 @@ int CoreText_GetFallbacks(vlc_font_select_t *fs, const char *psz_lcname,
     }
 
     /* get the index of the font family in the font file */
-    CFIndex fontIndex = getFontIndexInFontFile(psz_fontPath, psz_fallbackFamilyName);
+    CFIndex fontIndex = getFreeTypeIndex(psz_fontPath, fallbackFontDescriptor);
+    if (fontIndex == kCFNotFound)
+        fontIndex = getFontIndexInFontFile(psz_fontPath, psz_fallbackFamilyName);
     if (fontIndex == kCFNotFound) {
         goto done;
     }
