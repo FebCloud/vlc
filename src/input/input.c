@@ -206,42 +206,46 @@ input_item_t *input_GetItem( input_thread_t *p_input )
     return input_priv(p_input)->p_item;
 }
 
+/* The adaptive-variant calls come from vlc_player_*AdaptiveVariant*, under
+ * the player lock. The input thread holds lock_master for the whole demux
+ * open (InputSourceInit) and teardown, and meanwhile sends events that need
+ * the player lock (adding an ES): waiting for lock_master here deadlocked the
+ * two (an HLS master over a slow link, asked for its variants while opening).
+ * While the master is opening or closing there is nothing to report or switch,
+ * so give up instead of waiting. */
+static int AdaptiveVariantControl(input_thread_t *input, int query, ...)
+{
+    input_thread_private_t *priv = input_priv(input);
+    if (vlc_mutex_trylock(&priv->lock_master) != 0)
+        return VLC_EGENERIC;
+    int ret = VLC_EGENERIC;
+    if (priv->master != NULL && priv->master->p_demux != NULL)
+    {
+        va_list args;
+        va_start(args, query);
+        ret = demux_vaControl(priv->master->p_demux, query, args);
+        va_end(args);
+    }
+    vlc_mutex_unlock(&priv->lock_master);
+    return ret;
+}
+
 int input_GetAdaptiveVariants(input_thread_t *input,
                               vlc_adaptive_variant_t **variants,
                               size_t *count)
 {
-    input_thread_private_t *priv = input_priv(input);
-    vlc_mutex_lock(&priv->lock_master);
-    int ret = priv->master != NULL && priv->master->p_demux != NULL
-            ? demux_Control(priv->master->p_demux,
-                            DEMUX_GET_ADAPTIVE_VARIANTS, variants, count)
-            : VLC_EGENERIC;
-    vlc_mutex_unlock(&priv->lock_master);
-    return ret;
+    return AdaptiveVariantControl(input, DEMUX_GET_ADAPTIVE_VARIANTS,
+                                  variants, count);
 }
 
 int input_SetAdaptiveVariant(input_thread_t *input, const char *id)
 {
-    input_thread_private_t *priv = input_priv(input);
-    vlc_mutex_lock(&priv->lock_master);
-    int ret = priv->master != NULL && priv->master->p_demux != NULL
-            ? demux_Control(priv->master->p_demux,
-                            DEMUX_SET_ADAPTIVE_VARIANT, id)
-            : VLC_EGENERIC;
-    vlc_mutex_unlock(&priv->lock_master);
-    return ret;
+    return AdaptiveVariantControl(input, DEMUX_SET_ADAPTIVE_VARIANT, id);
 }
 
 int input_GetAdaptiveVariant(input_thread_t *input, char **id)
 {
-    input_thread_private_t *priv = input_priv(input);
-    vlc_mutex_lock(&priv->lock_master);
-    int ret = priv->master != NULL && priv->master->p_demux != NULL
-            ? demux_Control(priv->master->p_demux,
-                            DEMUX_GET_ADAPTIVE_VARIANT, id)
-            : VLC_EGENERIC;
-    vlc_mutex_unlock(&priv->lock_master);
-    return ret;
+    return AdaptiveVariantControl(input, DEMUX_GET_ADAPTIVE_VARIANT, id);
 }
 
 #undef input_Create
